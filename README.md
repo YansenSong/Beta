@@ -1,24 +1,24 @@
 # Beta Agent
 
-A compact Python agent framework inspired by the architectural ideas in Pi and the `learn-pi-agent` tutorial through Chapter 09.
+一个参考 Pi Agent 架构思想，并结合 `learn-pi-agent` 教程第 00～09 章设计实现的轻量级 Python 智能体框架。
 
-The goal of this repository is not to port Pi line-by-line. It keeps the same useful boundaries while giving them a Python-native shape: an async event-driven agent loop, provider adapters, a tool runtime, steering/follow-up queues, context hooks, branchable sessions, append-only compaction, and lazy skill discovery.
+这个仓库的目标不是把 Pi 的 TypeScript 源码逐行翻译成 Python，而是保留其中最重要的架构边界，并用更符合 Python 使用习惯的方式重新组织：异步事件驱动的 Agent Loop、模型适配层、Tool Runtime、Steering / Follow-up 队列、Context Hook、可分支 Session、追加式 Compaction，以及按需加载的 Skill 机制。
 
-## What is implemented
+## 当前已经实现
 
-- Async **Agent Loop** with `agent / turn / message / tool` events.
-- Whole-partial `message_update` events for streaming UIs and tracing.
-- Provider-neutral `ModelAdapter` protocol plus an **OpenAI-compatible streaming adapter**.
-- Typed tools using **Pydantic** schemas.
-- Tool lifecycle: lookup → prepare arguments → validate → before hook → execute → after hook → normalized Tool Result.
-- Parallel tool execution with deterministic history ordering.
-- **Steering** and **follow-up** queues at different checkpoints.
-- `transform_context`, `prepare_next_turn`, and graceful-stop hooks.
-- Append-only **SessionTree** with branching and JSONL persistence.
-- Branch-local **CompactionEntry** semantics without deleting old history.
-- **SkillCatalog** that injects only skill metadata; bodies are read lazily through ordinary tools.
+- 异步 **Agent Loop**，统一暴露 `agent / turn / message / tool` 生命周期事件；
+- `message_update` 始终携带当前完整 partial message，便于 UI、日志与 Tracing 使用；
+- 与 Provider 解耦的 `ModelAdapter` 协议，以及一个 **OpenAI-compatible 流式适配器**；
+- 基于 **Pydantic** Schema 的类型化 Tool；
+- 完整 Tool 生命周期：lookup → prepare arguments → validate → before hook → execute → after hook → Tool Result；
+- 多 Tool 并行执行，同时保持确定性的 history 写入顺序；
+- 不同检查点的 **Steering** 与 **Follow-up** 队列；
+- `transform_context`、`prepare_next_turn` 和 graceful stop 等扩展 Hook；
+- Append-only 的 **SessionTree**，支持分支和 JSONL 持久化；
+- Branch-local 的 **CompactionEntry**，压缩 Context 但不删除原始历史；
+- **SkillCatalog**，只向 system prompt 注入 Skill metadata，正文按需通过普通 Tool 读取。
 
-## Install
+## 安装
 
 ```bash
 python -m venv .venv
@@ -27,7 +27,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-## Minimal usage
+## 最小使用示例
 
 ```python
 import asyncio
@@ -61,23 +61,27 @@ async def main():
 asyncio.run(main())
 ```
 
-See [`examples/basic.py`](examples/basic.py) for a runnable example.
+可运行示例见 [`examples/basic.py`](examples/basic.py)。
 
-Documentation:
+## 文档
 
-- [`docs/FRAMEWORK.md`](docs/FRAMEWORK.md): 中文框架说明、运行流程、模块职责以及教程 00～09 章对应关系。
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): concise design-boundary reference.
+- [`docs/FRAMEWORK.md`](docs/FRAMEWORK.md)：完整中文框架说明，包括运行流程、模块职责、关键设计边界，以及教程 00～09 章和当前代码的对应关系；
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：更精简的架构边界与运行流程说明。
 
-## Steering vs follow-up
+## Steering 与 Follow-up
 
 ```python
 agent.steer("B 不用查了，改查 D")
 agent.follow_up("最后再总结成三点")
 ```
 
-Steering is injected only after the current turn (including its tool batch) finishes. Follow-up is checked later, when the run would otherwise end. This keeps the current turn internally consistent.
+Steering 不会抢占当前正在执行的 turn。当前 assistant message 以及它触发的 Tool batch 会先完整执行，等 `turn_end` 以后，Steering 才会作为普通 user message 注入下一轮。
 
-## Sessions
+Follow-up 的检查点更晚：只有当 Agent 本来已经准备结束当前 run 时，才会检查是否还有后续消息。如果存在 Follow-up，则继续开启下一轮，而不是立即 `agent_end`。
+
+这样可以保证每个 turn 的历史始终保持完整和自洽。
+
+## Session
 
 ```python
 from beta_agent import SessionTree
@@ -88,23 +92,33 @@ session.branch(entry.id)
 session.save_jsonl("session.jsonl")
 ```
 
-The session stores a tree, but `reconstruct_messages()` gives the Agent a normal linear active branch. Compaction is represented by another append-only entry and only changes reconstruction.
+Session 内部保存的是一棵 append-only 的历史树，但 Agent 每次实际运行仍然只接收当前 active branch 对应的线性 `Message[]`。
+
+调用 `branch(entry.id)` 时不会删除旧历史，只是把当前 `leaf_id` 移动到指定节点。之后产生的新消息会从这个节点继续形成新的分支。
+
+Compaction 同样不会重写或删除旧 Session Entry，而是追加一个新的 Compaction Entry，并在后续重建 Context 时用摘要替换更早的一段历史。
 
 ## Skills
 
-A skill is a `SKILL.md` with metadata frontmatter:
+一个 Skill 使用 `SKILL.md` 表示，并在文件顶部声明 metadata：
 
 ```markdown
 ---
 name: database-debugging
-description: Diagnose connection, slow query, and lock problems
+description: 排查数据库连接、慢查询与锁等待问题
 ---
 
-Full instructions live here...
+完整的领域说明写在这里……
 ```
 
-`SkillCatalog` places only `name`, `description`, and `location` into the system prompt. The model can read the full file through a normal read tool when it decides the skill is relevant.
+`SkillCatalog` 只会把 `name`、`description` 和 `location` 放进 system prompt，不会在启动时把全部 Skill 正文塞进 Context。
 
-## Scope
+当模型判断某个 Skill 与当前任务相关时，可以通过普通的文件读取 Tool 去读取对应 `SKILL.md`。这样既能保持 system prompt 精简，也能复用已有 Tool Runtime，而不需要给 Agent Loop 增加特殊的 `loadSkill()` 或 `executeSkill()` 逻辑。
 
-This first skeleton intentionally stops around the capabilities covered through tutorial Chapter 09. Extension runtimes, coding-agent-specific UX, advanced provider features, telemetry, sandboxing, MCP, and richer persistence backends are good next layers, but they should not be prerequisites for a clean core.
+## 当前范围
+
+这一版骨架刻意停留在教程第 00～09 章形成的能力边界附近。
+
+暂时没有把 Extension Runtime、Coding Agent 专用交互、复杂 Provider 特性、Telemetry、Sandbox、MCP、更完整的持久化后端等能力提前塞进 Core。
+
+这些都适合作为后续扩展层，但不应该成为一个清晰、可理解的基础 Agent Runtime 的前置条件。
