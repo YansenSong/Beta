@@ -20,6 +20,8 @@ MessageProvider = Callable[[], Awaitable[list[Message]] | list[Message]]
 
 @dataclass(slots=True)
 class AgentConfig:
+    # 这些 Hook 负责“策略”，Agent Loop 只负责稳定的运行时控制流。
+    # 这样后续增加上下文裁剪、权限判断等能力时，不需要不断改写主循环。
     tool_execution: Literal["parallel", "sequential"] = "parallel"
     transform_context: TransformContext | None = None
     prepare_next_turn: PrepareNextTurn | None = None
@@ -31,6 +33,11 @@ class AgentConfig:
 
 
 class _MessageQueue:
+    """Agent 内部使用的轻量消息队列。
+
+    Steering 和 Follow-up 故意使用两条队列，因为它们进入 Loop 的检查点不同。
+    """
+
     def __init__(self) -> None:
         self._items: deque[Message] = deque()
 
@@ -60,6 +67,7 @@ class Agent:
         self.config = config or AgentConfig()
         self._steering = _MessageQueue()
         self._follow_up = _MessageQueue()
+        # 同一个 Agent 的 context 是可变状态；禁止两个 run 同时修改它，避免 history 交叉写入。
         self._run_lock = asyncio.Lock()
 
     @property
@@ -97,6 +105,7 @@ class Agent:
         return list(prompt)
 
     async def _call(self, fn, *args):
+        """统一兼容同步 Hook 和异步 Hook，减少调用方接入成本。"""
         value = fn(*args)
         if inspect.isawaitable(value):
             return await value
@@ -129,12 +138,18 @@ class Agent:
                 await emit(AgentEvent(type="message_end", message=message))
 
             last_turn: TurnResult | None = None
+            # Steering 即使在 run 启动前已经排队，也应该参与下一次模型调用。
             pending = await self._drain_steering()
 
+            # 双层循环是一个关键设计：
+            # - 内层循环处理“当前任务仍需继续”的 Tool Call / Steering；
+            # - 外层循环只在任务本来要结束时，再检查更晚到达的 Follow-up。
             while True:
                 has_more_tool_calls = True
                 while has_more_tool_calls or pending:
                     if last_turn is not None:
+                        # prepare_next_turn 可以真正替换下一轮 Runtime context，
+                        # 它与只改变模型输入视图的 transform_context 不同。
                         if self.config.prepare_next_turn:
                             next_context = await self._call(self.config.prepare_next_turn, last_turn)
                             if next_context is not None:
@@ -144,6 +159,7 @@ class Agent:
                         await emit(AgentEvent(type="turn_start"))
 
                     if pending:
+                        # Steering 不抢占正在执行的 turn；只在完整 turn 结束后作为普通 user message 注入。
                         for message in pending:
                             self.context.messages.append(message)
                             new_messages.append(message)
@@ -162,6 +178,7 @@ class Agent:
                     tool_results: list[Message] = []
                     has_more_tool_calls = False
                     if assistant.tool_calls:
+                        # 输出被 token limit 截断时，参数即使“碰巧能解析”也可能不完整，因此禁止执行。
                         if assistant.stop_reason == "length":
                             batch = await self._fail_truncated_tool_calls(assistant, emit)
                         else:
@@ -189,8 +206,10 @@ class Agent:
                         await emit(AgentEvent(type="agent_end", messages=list(new_messages)))
                         return new_messages
 
+                    # 当前 turn（包括所有 tool result）完全结束后，Steering 才能影响下一轮。
                     pending = await self._drain_steering()
 
+                # Follow-up 的检查点更晚：只有 Agent 本来准备结束当前 run 时才读取。
                 follow_up = await self._drain_follow_up()
                 if follow_up:
                     pending = follow_up
@@ -201,6 +220,7 @@ class Agent:
             return new_messages
 
     async def _stream_assistant(self, emit) -> Message:
+        # transform_context 只决定“本轮模型看到什么”，默认不替换 Runtime 保存的完整 history。
         llm_messages: Sequence[Message] = self.context.messages
         if self.config.transform_context:
             llm_messages = await self._call(self.config.transform_context, list(llm_messages))
@@ -218,6 +238,8 @@ class Agent:
                 added_partial = True
                 await emit(AgentEvent(type="message_start", message=partial.copy()))
             elif event.type == "update":
+                # update 携带的是“当前完整 partial message”，而不是单独字符 delta。
+                # UI/Tracing 即使漏掉某个更新，也可以直接使用下一次完整状态继续渲染。
                 if added_partial:
                     self.context.messages[-1] = partial
                 else:

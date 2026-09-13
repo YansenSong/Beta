@@ -27,7 +27,11 @@ async def compact_session(
     if len(message_entries) <= keep_last_messages:
         return None
 
+    # 先按“希望保留最近 N 条消息”计算候选切点。
     target_pos = max(0, len(message_entries) - keep_last_messages)
+
+    # 切点不能只看数量，还要尽量落在安全的协议边界。
+    # 从 user message 开始 retained tail，可以避免只保留 tool result、却把对应 tool call 摘要掉。
     while target_pos > 0:
         candidate = message_entries[target_pos][1]
         if candidate.payload.get("role") == "user":
@@ -39,11 +43,14 @@ async def compact_session(
     if not prefix_entries:
         return None
 
+    # 只摘要切点以前的旧消息。原 Session Entry 不会删除，摘要只是新的 append-only 记录。
     prefix_messages = [session_message(e) for e in prefix_entries]
     summary = summarize(prefix_messages)
     if inspect.isawaitable(summary):
         summary = await summary
 
+    # tokens_before 是压缩时的观测信息，不参与 Session Tree 的结构关系。
+    # 未提供精确 tokenizer 时，用字符数做一个足够简单的近似估算。
     tokens_before = (
         estimate_tokens([session_message(e) for _, e in message_entries])
         if estimate_tokens

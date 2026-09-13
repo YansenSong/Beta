@@ -61,7 +61,12 @@ async def main():
 asyncio.run(main())
 ```
 
-See [`examples/basic.py`](examples/basic.py) for a runnable example and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design boundaries.
+See [`examples/basic.py`](examples/basic.py) for a runnable example.
+
+Documentation:
+
+- [`docs/FRAMEWORK.md`](docs/FRAMEWORK.md): 中文框架说明、运行流程、模块职责以及教程 00～09 章对应关系。
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): concise design-boundary reference.
 
 ## Steering vs follow-up
 
