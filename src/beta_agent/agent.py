@@ -137,7 +137,7 @@ class Agent:
                 await emit(AgentEvent(type="message_start", message=message))
                 await emit(AgentEvent(type="message_end", message=message))
 
-            last_turn: TurnResult | None = None
+            previous_turn: TurnResult | None = None
             # Steering 即使在 run 启动前已经排队，也应该参与下一次模型调用。
             pending = await self._drain_steering()
 
@@ -147,11 +147,12 @@ class Agent:
             while True:
                 has_more_tool_calls = True
                 while has_more_tool_calls or pending:
-                    if last_turn is not None:
+                    # 上一轮 turn 的结果非空
+                    if previous_turn is not None:
                         # prepare_next_turn 可以真正替换下一轮 Runtime context，
                         # 它与只改变模型输入视图的 transform_context 不同。
                         if self.config.prepare_next_turn:
-                            next_context = await self._call(self.config.prepare_next_turn, last_turn)
+                            next_context = await self._call(self.config.prepare_next_turn, previous_turn)
                             if next_context is not None:
                                 self.context = next_context
                         if not pending:
@@ -193,7 +194,7 @@ class Agent:
                         has_more_tool_calls = not batch.terminate
 
                     await emit(AgentEvent(type="turn_end", message=assistant, tool_results=list(tool_results)))
-                    last_turn = TurnResult(
+                    previous_turn = TurnResult(
                         message=assistant,
                         tool_results=list(tool_results),
                         context=self.context,
@@ -201,7 +202,7 @@ class Agent:
                     )
 
                     if self.config.should_stop_after_turn and await self._call(
-                        self.config.should_stop_after_turn, last_turn
+                        self.config.should_stop_after_turn, previous_turn
                     ):
                         await emit(AgentEvent(type="agent_end", messages=list(new_messages)))
                         return new_messages
