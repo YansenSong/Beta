@@ -1,519 +1,475 @@
 # Beta Agent 当前框架说明
 
-本文档用于介绍 `Beta` 仓库当前已经搭建完成的智能体框架。它不是 Pi 的逐行 Python 翻译，而是参考 Pi Agent 的核心设计，以及 `learn-pi-agent` 教程第 00～09 章所形成的能力边界，用 Python 重新组织出的一个最小、完整、可扩展骨架。
+本文档介绍 `Beta` 当前 `main` 分支已经实现的 Python Agent Framework。
 
-当前目标不是做一个功能堆满的 Coding Agent，而是先把 Agent 最重要的运行机制稳定下来。后续无论加入 MCP、Extension、沙箱、更多模型 Provider、复杂记忆或 Coding Agent UI，都尽量建立在这些边界之上，而不是反过来改坏 Core。
-
----
-
-## 1. 当前框架解决什么问题
-
-从最小视角看，一个 Tool-driven Agent 的核心循环只有：
+它参考 Pi Agent 的架构思想和 `learn-pi-agent` Chapter 00～11 的递进过程，但不是 TypeScript 源码的逐行翻译。Beta 更关注这些稳定边界：
 
 ```text
-User Message
-    ↓
-LLM
-    ↓
-Assistant Message
-    ↓
-是否包含 Tool Call？
-    ├── 否 → 当前任务结束
-    └── 是
-          ↓
-       执行 Tool
-          ↓
-       Tool Result
-          ↓
-       再次调用 LLM
+Model Boundary
+Agent Loop
+Event Stream
+Tool Runtime
+Steering / Follow-up
+Context Transform
+Session Tree
+Compaction
+Skills
+Extension Runtime
+Extension Composition
 ```
 
-真正做成框架以后，还需要解决：
-
-- 如何把运行过程实时暴露给 UI / 日志 / Tracing；
-- Tool 参数如何校验，失败后怎样反馈给模型；
-- 多个 Tool Call 是否可以并行执行；
-- 用户在 Agent 工作途中补充要求时，什么时候进入下一轮；
-- Runtime history 和某一次 LLM 实际看到的 Context 如何解耦；
-- 长会话如何保存、分支和恢复；
-- Context 太长时如何压缩但不破坏原始历史；
-- 如何让 Agent 按需加载领域工作流，而不是把所有说明都塞进 system prompt。
-
-Beta 当前骨架正是围绕这些问题组织的。
+当前阶段仍然不是“完整 Coding Agent”。Chapter 12 才会把 read / write / edit / grep / bash、Workspace 与前面这些 Runtime primitive 真正组装起来。
 
 ---
 
-## 2. 目录结构
+## 1. 框架现在解决什么问题
+
+最小 Tool-driven Agent 的循环很简单：
+
+```text
+User
+ ↓
+LLM
+ ↓
+Assistant
+ ↓
+Tool Call?
+├── no  → finish
+└── yes → Tool → Tool Result → LLM
+```
+
+真正做成可维护框架以后，还需要回答：
+
+- Provider 协议差异放在哪里；
+- 流式过程如何暴露给 CLI / UI / tracing；
+- Tool 参数怎样验证、失败怎样回给模型；
+- 多个 Tool Call 怎样并行但保持稳定历史；
+- 用户中途 Steering / Follow-up 何时进入下一轮；
+- Runtime history 与单次 LLM Context 怎样解耦；
+- 长会话如何分支、持久化、压缩；
+- Skill 如何按需加载；
+- Permission / Plan Mode / Subagent 这类行为是否需要修改 Agent Core；
+- 外部 Python 模块怎样安全地注册 Tool、Command、Handler。
+
+Beta 当前 00～11 的代码就是围绕这些问题形成的。
+
+---
+
+## 2. 当前目录结构
 
 ```text
 Beta/
 ├── docs/
-│   ├── ARCHITECTURE.md          # 精简版架构边界说明
-│   └── FRAMEWORK.md             # 当前这份完整框架说明
+│   ├── README.md
+│   ├── ARCHITECTURE.md
+│   ├── FRAMEWORK.md
+│   ├── EXTENSIONS.md
+│   └── tutorials/
+│       ├── 00-model-boundary.md
+│       ├── ...
+│       ├── 10-extension-runtime.md
+│       └── 11-extension-composition.md
 ├── examples/
-│   └── basic.py                 # 最小运行示例
+│   ├── deepseek_cli.py
+│   └── extensions/
+│       ├── permission_gate.py
+│       ├── plan_mode.py
+│       └── subagent.py
 ├── skills/
-│   └── example/
-│       └── SKILL.md             # Skill 示例
+│   └── example/SKILL.md
 ├── src/beta_agent/
-│   ├── __init__.py              # 公共 API 导出
-│   ├── agent.py                 # Agent Loop / Steering / Follow-up
-│   ├── types.py                 # Message、Event、ToolCall 等基础数据结构
-│   ├── events.py                # 异步 EventStream
-│   ├── model.py                 # Provider-neutral ModelAdapter
-│   ├── tools.py                 # Tool 与 ToolRuntime
-│   ├── builtin_tools.py         # 内置基础 Tool
-│   ├── session.py               # Append-only Session Tree
-│   ├── compaction.py            # Context Compaction
-│   ├── skills.py                # Skill 发现与 metadata catalog
-│   └── adapters/
-│       └── openai_compatible.py # OpenAI-compatible 流式模型适配器
+│   ├── __init__.py
+│   ├── agent.py
+│   ├── types.py
+│   ├── events.py
+│   ├── model.py
+│   ├── tools.py
+│   ├── builtin_tools.py
+│   ├── session.py
+│   ├── compaction.py
+│   ├── skills.py
+│   ├── adapters/
+│   │   └── openai_compatible.py
+│   └── extensions/
+│       ├── __init__.py
+│       ├── types.py
+│       ├── runner.py
+│       ├── wrapper.py
+│       ├── loader.py
+│       └── bridge.py
 └── tests/
     ├── test_agent_loop.py
     ├── test_parallel_tools.py
     ├── test_session.py
-    └── test_skills.py
+    ├── test_skills.py
+    ├── test_extension_runtime.py
+    └── test_extension_composition.py
 ```
 
-可以把整个项目粗略分成四层：
+整个系统可以粗略看成：
 
 ```text
-Harness / Application
-    │
-    ├── Session / Compaction / Skills
-    │
-Agent Runtime
-    ├── Agent Loop
-    ├── Event Stream
-    └── Tool Runtime
-    │
+Application / Harness
+├── CLI
+├── Session / Compaction / Skills
+└── ExtensionHost / ExtensionRunner
+        ↓
+Agent Core
+├── Agent Loop
+├── EventStream
+└── ToolRuntime
+        ↓
 Provider Boundary
-    └── ModelAdapter
-    │
+└── ModelAdapter
+        ↓
 External Model API
 ```
 
-最重要的原则是：**不同层只理解自己真正需要理解的东西。**
-
 ---
 
-## 3. 核心数据模型：`types.py`
+## 3. 核心协议：`types.py`
 
-`types.py` 是整个框架共享的数据协议层，主要包括：
+`types.py` 是框架内部共享的数据协议层。
 
-- `Message`：用户、助手、Tool Result、System 等消息；
-- `ToolCall`：模型要求执行的某一次工具调用；
-- `ToolResult`：工具执行后的标准化结果；
-- `AgentEvent`：运行时事件；
-- `AgentContext`：当前 system prompt、messages 和 tools；
-- `TurnResult`：一轮完整执行结束后的快照；
-- `ToolBatchResult`：一批工具执行后的消息和终止状态。
-
-框架内部尽量围绕这些统一对象工作，而不是让 Agent Loop 直接依赖某个模型厂商的 JSON 格式。
-
-这意味着：
+主要对象包括：
 
 ```text
-Agent Message / ToolCall
-        ↓
-   Agent Runtime
-        ↓
-ModelAdapter 边界
-        ↓
-OpenAI / 其他 Provider 协议
+Message
+ToolCall
+ToolResult
+ModelEvent
+AgentEvent
+AgentContext
+ToolBatchResult
+TurnResult
 ```
 
-Provider 的特殊格式应该尽量停留在 Adapter 层。
+核心思想是：Agent Runtime 围绕自己的内部对象工作，而不是直接操作某个 Provider 的 JSON。
+
+例如：
+
+```text
+Message / ToolCall
+      ↓
+Agent Runtime
+      ↓
+ModelAdapter
+      ↓
+Provider request / stream response
+```
+
+这条边界让未来增加其他 Provider 时，不需要重写 Agent Loop。
 
 ---
 
 ## 4. 模型边界：`model.py` 与 `adapters/`
 
-### 4.1 `ModelAdapter`
+### `ModelAdapter`
 
-Agent Loop 不直接调用 OpenAI SDK，而是依赖 `ModelAdapter` 协议。
-
-它关心的是：
+Agent 只依赖一个 Provider-neutral 接口：
 
 ```text
 system_prompt
 messages
-available tools
-        ↓
+tools
+   ↓
 stream()
-        ↓
+   ↓
 ModelEvent
 ```
 
-这样做的好处是，未来添加 Anthropic、Gemini、本地模型或自定义网关时，不需要重新设计 Agent Loop。
+### `ScriptedModelAdapter`
 
-### 4.2 `ScriptedModelAdapter`
+测试里使用脚本化模型响应，不依赖真实 API。
 
-测试中使用可脚本化的假模型 Adapter。
+这很重要，因为 Tool Loop、Steering、Context、Extension 等 Runtime 行为应该可以做确定性测试。
 
-它的意义很重要：Agent Runtime 的大部分行为都应该能在**不访问真实模型 API**的情况下进行确定性测试。
+### `OpenAICompatibleAdapter`
 
-### 4.3 `OpenAICompatibleAdapter`
+当前真实模型适配器采用 OpenAI-compatible Chat Completions 风格，负责：
 
-当前提供一个最小的 OpenAI-compatible Chat Completions 流式实现，主要负责：
+- 内部 Message → Provider message；
+- Pydantic Tool schema → function tool schema；
+- 流式文本累积；
+- tool call argument 累积；
+- finish reason 映射；
+- Provider stream → `ModelEvent`。
 
-- 把内部 `Message` 转换为 Provider message；
-- 把 `Tool` 的 Pydantic schema 转成 function tool schema；
-- 累积流式文本；
-- 累积流式 tool call arguments；
-- 最终重新产生统一的 `ModelEvent` / `Message`。
-
-因此 Provider protocol 与 Agent Runtime 仍然隔着明确边界。
+`examples/deepseek_cli.py` 使用这一 Adapter 连接 DeepSeek API。
 
 ---
 
-## 5. EventStream：运行过程也是框架输出
+## 5. EventStream：结果之外还要暴露过程
 
-如果 Agent 只有：
+Agent 不只是最终返回一段文本。
 
-```python
-result = await agent.run(...)
-```
-
-那么外部只能等任务彻底结束。
-
-但真实 Agent 可能经历：
-
-```text
-开始 run
-↓
-模型开始输出
-↓
-模型持续生成文本
-↓
-Tool 开始执行
-↓
-Tool 上报进度
-↓
-Tool 完成
-↓
-第二轮模型调用
-↓
-最终结束
-```
-
-所以 Beta 把过程暴露为统一事件流。
-
-当前事件包括：
+一次真实 run 可能经历：
 
 ```text
 agent_start
-agent_end
-
 turn_start
-turn_end
-
 message_start
-message_update
-message_end
-
+message_update × N
 tool_execution_start
-tool_execution_update
+tool_execution_update × N
 tool_execution_end
+message_end
+turn_end
+...
+agent_end
 ```
 
-UI、日志系统、Tracing 系统都可以订阅同一条流，不需要 Agent Loop 分别知道这些消费者是谁。
+因此 `EventStream` 同时提供：
 
-### 为什么 `message_update` 使用完整 partial message
+```python
+async for event in stream:
+    ...
 
-更新事件不是只发送：
+messages = await stream.result()
+```
+
+前者用于 UI / CLI / tracing，后者用于拿最终结果。
+
+### 完整 partial message
+
+`message_update` 不是只发字符 delta，而是发当前完整 partial message：
 
 ```text
-"Hel"
-"lo"
+H
+He
+Hel
+Hell
+Hello
 ```
 
-而是发送当前完整状态：
-
-```text
-"Hel"
-"Hello"
-```
-
-这样消费者不必自己重新拼接 Assistant Message，也更容易同时处理流式 Tool Call。
+这样消费者即使错过某次 update，也能直接使用后续完整状态继续渲染。
 
 ---
 
 ## 6. Agent Loop：`agent.py`
 
-`Agent` 是当前 Runtime 的控制中心，但它刻意不承担 Tool 参数校验、Session Tree、Skill 发现等职责。
+`Agent` 负责稳定控制流，而不负责具体 Tool、Session 或 Extension 策略。
 
-一次 run 的主要流程是：
+一次 run 的主要路径：
 
 ```text
 agent_start
-    ↓
+   ↓
 turn_start
-    ↓
-注入本轮 user / queued message
-    ↓
-transform_context（可选）
-    ↓
+   ↓
+user / queued messages
+   ↓
+transform_context
+   ↓
 ModelAdapter.stream()
-    ↓
+   ↓
 Assistant Message
-    ↓
+   ↓
 Tool Calls?
-    ├── 有 → ToolRuntime.execute_batch()
-    │          ↓
-    │       Tool Results
-    │          ↓
-    │       turn_end
-    │          ↓
-    │       下一轮
-    │
-    └── 无 → turn_end
-              ↓
-          Steering?
-              ↓
-          Follow-up?
-              ↓
-          agent_end
+├── yes → ToolRuntime.execute_batch()
+│          ↓
+│       Tool Results
+│          ↓
+│       turn_end
+│          ↓
+│       next turn
+└── no  → turn_end
+           ↓
+        Steering?
+           ↓
+        Follow-up?
+           ↓
+        agent_end
 ```
 
-### 6.1 为什么 Runtime history 和 LLM input 要分开
-
-`self.context.messages` 保存 Agent 已经发生过的完整历史。
-
-而 `transform_context()` 返回的是：
+Agent 本身不知道：
 
 ```text
-“这一轮模型应该看到的 messages”
+permission gate
+plan mode
+subagent
+extension directory
 ```
 
-例如 Runtime 可以保存 100 条消息，但本轮只发送其中经过裁剪的 20 条。
+这些都在更外层组合。
 
-因此：
+---
+
+## 7. Context 的两个层次
+
+### `transform_context`
+
+只改变：
 
 ```text
-Runtime history ≠ Current LLM input
+“这一轮模型看到什么”
 ```
 
-这条边界以后可以承载：
+默认不修改完整 Runtime history。
+
+所以：
+
+```text
+Agent.context.messages
+≠
+本次 ModelAdapter 输入 messages
+```
+
+这条 seam 可用于：
 
 - sliding window；
-- RAG 临时上下文；
-- 内部消息过滤；
-- Provider-specific context policy。
+- RAG 临时注入；
+- message filtering；
+- Plan Mode prompt；
+- Provider-specific policy。
 
-### 6.2 `prepare_next_turn`
+### `prepare_next_turn`
 
-与 `transform_context()` 不同，`prepare_next_turn()` 可以真正替换下一轮 Runtime context。
+它更强，可以真正替换下一轮 Runtime 的 `AgentContext`。
 
-可以把它理解成：
+可以理解为：
 
 ```text
 transform_context
-→ 临时修改“本轮模型看到什么”
+→ 临时模型视图
 
 prepare_next_turn
-→ 修改“下一轮 Runtime 从什么状态继续”
+→ 下一轮 Runtime 状态
 ```
 
 ---
 
-## 7. Steering 与 Follow-up
+## 8. Steering 与 Follow-up
 
-这两个概念看起来都像“用户又发了一条消息”，但时序不同。
+两者最终都会成为普通 user message，但时机不同。
 
-### 7.1 Steering
+### Steering
 
-假设 Agent 正在执行：
-
-```text
-查 A、B、C
-```
-
-模型已经发出了三个 Tool Call，这时用户说：
+在当前 turn 完整结束后读取：
 
 ```text
-B 不用了，改查 D
-```
-
-Beta 不会让这条新消息强行插进当前 Tool batch。
-
-当前 turn 会先完整结束：
-
-```text
-assistant tool calls
+Assistant
 ↓
-tool results
+Tool batch
+↓
+Tool Results
 ↓
 turn_end
 ↓
-读取 steering
+Steering
 ↓
-把新 user message 放入下一轮
+next turn
 ```
 
-这样当前历史始终是自洽的。
+不会强行打断正在执行的 Tool batch。
 
-### 7.2 Follow-up
+### Follow-up
 
-Follow-up 的读取点更晚。
-
-只有当前 Agent **本来已经准备结束 run** 时，才读取 Follow-up。
-
-例如：
+只有 Agent 本来准备结束整个 run 时才读取：
 
 ```text
-assistant: 任务已经完成
-↓
 没有 Tool Call
 ↓
 没有 Steering
 ↓
-本来准备 agent_end
+准备 agent_end
 ↓
-发现 Follow-up: “再总结成三点”
-↓
-继续下一轮
+Follow-up?
+├── yes → next turn
+└── no  → agent_end
 ```
 
-因此 Agent Loop 使用双层循环，而不是把两种消息合成一个模糊的 pending queue。
+这就是 Agent Loop 使用不同 checkpoint 的原因。
 
 ---
 
-## 8. Tool Runtime：`tools.py`
+## 9. Tool 与 ToolRuntime：`tools.py`
 
-Tool Runtime 的目标是让 Agent Loop 不需要知道每一种 Tool 执行细节。
-
-完整 Tool Call 生命周期是：
+每个 Tool 声明：
 
 ```text
-Tool Call
-   ↓
+name
+description
+args_model
+handler
+execution_mode
+prepare_arguments(optional)
+```
+
+完整 Tool lifecycle：
+
+```text
+ToolCall
+↓
 lookup
-   ↓
+↓
 prepare_arguments
-   ↓
+↓
 Pydantic validate
-   ↓
+↓
 before_tool_call
-   ↓
+↓
 execute
-   ↓
+↓
 after_tool_call
-   ↓
-Tool Result
+↓
+ToolResult
+↓
+Tool Result Message
 ```
 
-### 8.1 参数验证
+Tool 错误不会默认把整个 Agent run 直接打崩，而是尽量被转换成模型可见结果，让模型有机会自我修正。
 
-每个 Tool 都声明一个 Pydantic `args_model`。
+### truncated tool call
 
-模型参数不是直接传给 Tool handler，而是先经过：
-
-```python
-args = tool.args_model.model_validate(raw_args)
-```
-
-如果失败，错误会转成模型可见的 Tool Result，而不是让整个 Agent Runtime 崩溃。
-
-### 8.2 before / after hook
-
-`before_tool_call` 适合：
-
-- 权限检查；
-- 人工确认；
-- 调用次数限制；
-- 环境策略。
-
-`after_tool_call` 适合：
-
-- 标准化返回值；
-- 加 metadata；
-- 修改错误状态；
-- 给出 graceful terminate 信号。
-
-这些策略都不需要写进具体 Tool，也不需要塞进 Agent Loop。
+如果模型因为 token limit 截断了 Tool Call，Runtime 不会因为参数“碰巧能解析”就执行，而是返回明确失败结果。
 
 ---
 
-## 9. 并行 Tool 的两个顺序
+## 10. Parallel Tool 的两个顺序
 
-这是当前框架里最值得注意的一个设计。
-
-假设模型一次请求：
+假设模型请求：
 
 ```text
 A → B → C
 ```
 
-执行时间分别是：
-
-```text
-A = 300ms
-B = 50ms
-C = 150ms
-```
-
-真实完成顺序会是：
+真实完成顺序：
 
 ```text
 B → C → A
 ```
 
-因此观测事件应该反映真实情况：
+Beta 保留：
 
 ```text
-tool_execution_end(B)
-tool_execution_end(C)
-tool_execution_end(A)
+execution events
+→ B → C → A
+
+history commit
+→ A → B → C
 ```
 
-但是 history 如果也按完成速度写入，就可能因为机器负载不同而变成不稳定顺序。
+所以 Observability 反映真实执行过程，而 Message history 保持确定性。
 
-所以 Tool Result 仍然按模型原始顺序写入：
-
-```text
-ToolResult(A)
-ToolResult(B)
-ToolResult(C)
-```
-
-最终框架同时保留：
-
-```text
-Execution events → completion order
-Message history   → source order
-```
-
-另外，并行只发生在真正 `execute` 阶段。
-
-前面的：
+并发只发生在真正的 `execute` 阶段，preflight：
 
 ```text
 lookup
 prepare
 validate
-before hook
+before_tool_call
 ```
 
-仍按 source order 完成。
+仍然保持 source order。
 
 ---
 
-## 10. Session Tree：`session.py`
+## 11. Session Tree：`session.py`
 
-Agent Loop 只需要一条线性的 `messages[]`。
+长期历史不是一条会被覆盖的数组，而是一棵 append-only tree。
 
-但长期会话管理需要支持：
-
-- 保存历史；
-- 回到旧节点；
-- 从旧节点重新分支；
-- 切回其他分支；
-- 持久化。
-
-因此 Session 不直接保存“一份可被截断的 messages 数组”，而是保存 Entry Tree。
-
-每个 Entry 有：
+每个 `SessionEntry` 有：
 
 ```text
 id
@@ -523,67 +479,41 @@ type
 payload
 ```
 
-普通历史可能是：
+如果原历史：
 
 ```text
 U1 → A1 → U2 → A2
 ```
 
-如果把 leaf 移回 A1，然后继续追加：
+把 leaf 移回 A1 后继续：
 
 ```text
 U1
  ↓
 A1
- ├── U2 → A2
+ ├── U2  → A2
  └── U2' → A2'
 ```
 
-旧节点没有任何一个被删除。
+旧分支仍然存在。
 
-### `branch()` 实际做什么
+Agent 最终消费的仍然是 `get_branch()` 还原出来的当前线性 Message 序列。
 
-它只是：
-
-```text
-移动 leaf_id
-```
-
-下一条 Entry 的 `parent_id` 会指向新的 leaf。
-
-### Agent 如何使用 Session Tree
-
-模型不需要知道整棵树。
-
-`get_branch()` 会从当前 leaf 沿 `parent_id` 回溯，再转换成一条线性路径。
-
-因此边界是：
-
-```text
-SessionTree
-→ 保存完整树
-
-Agent
-→ 只得到当前 active branch 的 Message[]
-```
+Session 还支持 JSONL 保存与加载。
 
 ---
 
-## 11. Context Compaction：`compaction.py`
+## 12. Context Compaction：`compaction.py`
 
-长 Session 不应该因为模型 Context Window 有上限，就删除旧历史。
+Context Window 有上限，不代表历史必须删除。
 
-Beta 的做法是把一次压缩本身也保存成 Session Entry。
+Beta 会追加：
 
 ```text
-旧历史
-↓
-生成 summary
-↓
-追加 CompactionEntry
+CompactionEntry
 ```
 
-Compaction Entry 主要记录：
+记录：
 
 ```text
 summary
@@ -591,52 +521,31 @@ first_kept_entry_id
 tokens_before
 ```
 
-它表达的是：
-
-> 当前分支从这里重建 Context 时，更早的一段消息可以用 summary 替代。
-
-旧 Entry 仍然完整保存在 Session Tree 中。
-
-### 为什么 `first_kept_entry_id` 很重要
-
- retained tail 不能从任意消息开始。
-
-例如：
+未来重建当前 branch 时使用：
 
 ```text
-assistant(tool_call)
-tool_result
+summary + retained tail
 ```
 
-如果只保留 `tool_result`，Provider 上下文就会失去对应的 Tool Call。
+原始旧 Entry 仍然保留。
 
-当前实现会尽量把 retained tail 回退到 user message 边界，以避免切坏 Tool 协议关系。
+retained tail 会尽量从 user message 边界开始，避免留下孤立的 Tool Result。
 
 ---
 
-## 12. Skills：`skills.py`
+## 13. Skills：`skills.py`
 
-Skill 不是 Tool。
-
-Tool 表示：
+Skill 与 Tool 职责不同。
 
 ```text
-Agent 可以执行什么操作
+Tool
+→ Agent 可以执行什么操作
+
+Skill
+→ 遇到某类任务时应采用什么方法
 ```
 
-Skill 表示：
-
-```text
-遇到某类任务时，Agent 应该遵循什么工作方法
-```
-
-例如：
-
-```text
-skills/database-debugging/SKILL.md
-```
-
-启动时，Beta 只读取：
+启动时只读取 Skill metadata：
 
 ```text
 name
@@ -644,256 +553,471 @@ description
 location
 ```
 
-然后生成一个轻量 catalog 放入 system prompt。
+正文仍留在 `SKILL.md` 文件里。
 
-Skill 正文不会全部提前进入上下文。
+模型真正判断 Skill 相关时，再通过普通读取 Tool 加载正文。
 
-模型判断 Skill 与当前问题相关后，再通过普通文件读取 Tool 获取正文：
+所以大量 Skill 不会一次性污染 system prompt。
+
+---
+
+## 14. Extension Runtime：`extensions/`
+
+Chapter 10 加入 Extension Runtime，但没有修改 Agent Loop 的基本形状。
+
+核心目录：
 
 ```text
-Skill metadata in prompt
-        ↓
-模型判断相关
-        ↓
-read(SKILL.md)
-        ↓
-Tool Result
-        ↓
-Skill 正文进入当前 run
+src/beta_agent/extensions/
+├── types.py
+├── runner.py
+├── wrapper.py
+├── loader.py
+└── bridge.py
 ```
 
-这样可以做到“能力很多，但每次 Context 只加载真正相关的说明”。
+### `ExtensionAPI`
 
----
-
-## 13. 与 learn-pi-agent 00～09 章的对应关系
-
-| 教程章节 | Beta 中的主要落点 | 当前能力 |
-| --- | --- | --- |
-| 00 Minimal LLM Call | `model.py`, `adapters/` | 模型抽象、流式输出、Provider 边界 |
-| 01 Tool-driven Agent | `agent.py`, `tools.py` | LLM → Tool → Tool Result → LLM 循环 |
-| 02 Agent Runtime | `events.py`, `agent.py` | Agent / Turn / Message 生命周期事件 |
-| 03 Tool Runtime | `tools.py` | lookup、prepare、validate、hook、execute |
-| 04 Parallel Tools | `tools.py` | 顺序 preflight、并发 execute、稳定 history |
-| 05 Steering & Follow-up | `agent.py` | 两种消息队列与不同检查点 |
-| 06 Context Transform | `agent.py` | `transform_context`, `prepare_next_turn` |
-| 07 Session Tree | `session.py` | parent/leaf、branch、JSONL 持久化 |
-| 08 Context Compaction | `compaction.py` | append-only CompactionEntry、重建短 Context |
-| 09 Skills | `skills.py`, `builtin_tools.py` | Skill metadata catalog、正文 lazy load |
-
-因此目前这版可以理解为：
-
-> 把教程第 00～09 章中已经形成的稳定 Core 能力合并成一个 Python 包，而不是继续保持“每章一份 demo”。
-
----
-
-## 14. 一个最小运行示例
+Extension factory 只能注册受控能力：
 
 ```python
-import asyncio
-from pydantic import BaseModel
-
-from beta_agent import Agent, Tool, ToolExecutionContext, ToolResult
-from beta_agent.adapters import OpenAICompatibleAdapter
-
-
-class AddArgs(BaseModel):
-    a: float
-    b: float
-
-
-async def add(args: AddArgs, ctx: ToolExecutionContext) -> ToolResult:
-    return ToolResult(content=str(args.a + args.b))
-
-
-async def main():
-    model = OpenAICompatibleAdapter(
-        model="gpt-4.1-mini",
-        api_key="...",
-    )
-
-    agent = Agent(
-        model=model,
-        tools=[
-            Tool(
-                name="add",
-                description="Add two numbers",
-                args_model=AddArgs,
-                handler=add,
-            )
-        ],
-    )
-
-    stream = agent.stream("12 + 30 等于多少？")
-
-    async for event in stream:
-        print(event.type)
-
-    messages = await stream.result()
-    print(messages[-1].content)
-
-
-asyncio.run(main())
+pi.on(...)
+pi.register_tool(...)
+pi.register_command(...)
 ```
 
-更完整的可运行示例见：
+它不会直接得到完整 `Agent`。
+
+### `ExtensionRunner`
+
+保存：
 
 ```text
-examples/basic.py
+handlers
+tools
+commands
+runtime config
+session
+errors
+```
+
+并定义事件组合语义。
+
+### `ExtensionHost`
+
+由 `bind_extensions()` 创建，负责把 Runner 接回已有 Core seam：
+
+```text
+context     → transform_context
+tool_call   → before_tool_call
+message_end ← EventStream
+turn_end    ← EventStream
+active tools → running Agent tools
+```
+
+因此 Extension Runtime 属于 Harness 层。
+
+---
+
+## 15. Extension factory 的原子加载
+
+假设：
+
+```python
+def extension(pi):
+    pi.register_tool(tool_a)
+    raise RuntimeError("boom")
+```
+
+不能留下半个 Extension。
+
+所以 Runner 使用：
+
+```text
+temporary registrations
+        ↓
+run factory
+        ↓
+success?
+├── yes → commit all
+└── no  → discard all
+```
+
+一个 Extension 失败不会阻止其他 Extension 继续加载。
+
+错误被记录在：
+
+```python
+runner.errors
 ```
 
 ---
 
-## 15. 新功能应该放在哪里
+## 16. Extension Event Composition
 
-后面扩展时，可以先用下面的判断方式决定代码位置。
+当前四类事件：
+
+```text
+tool_call
+context
+message_end
+turn_end
+```
+
+不是统一的 EventEmitter 规则。
+
+### Observe
+
+`message_end / turn_end`：按注册顺序执行，单个 handler 失败被隔离。
+
+### Intercept
+
+`tool_call`：第一个返回 `block=True` 的 handler 立即短路。
+
+### Transform
+
+`context`：顺序 pipeline：
+
+```text
+messages0
+↓ A
+messages1
+↓ B
+messages2
+↓ Model
+```
+
+详细使用方式见 [`EXTENSIONS.md`](EXTENSIONS.md)。
+
+---
+
+## 17. Extension Tool
+
+Extension 作者可以定义 `ExtensionTool`，handler 会额外拿到 `ExtensionContext`。
+
+但注册后会被 wrapper 转回普通 Core `Tool`：
+
+```text
+ExtensionTool
+↓
+wrapper
+↓
+Tool
+↓
+ToolRuntime
+```
+
+因此 Extension Tool 自动复用：
+
+- Pydantic validation；
+- before / after hook；
+- sequential / parallel execution；
+- progress event；
+- error normalization；
+- source-order history commit。
+
+不会出现第二套 Extension Tool protocol。
+
+---
+
+## 18. Active Tools
+
+Extension 通过：
+
+```python
+ctx.get_active_tools()
+ctx.set_active_tools(names)
+```
+
+改变下一次 ModelAdapter 调用可见的 Tool。
+
+它不直接修改：
+
+```python
+agent.context.tools
+```
+
+bridge 负责：
+
+```text
+Tool names
+↓ resolve
+Tool objects
+↓ apply
+running Agent
+```
+
+这也是 Plan Mode 能动态关闭 mutation Tool 的基础。
+
+---
+
+## 19. Chapter 11：Extension Composition
+
+Chapter 11 用三个能力验证 Extension primitive 是否足够强。
+
+### Permission Gate
+
+```text
+tool_call
+→ inspect bash command
+→ allow / block
+```
+
+被 block 后仍然经过 Core ToolRuntime，最终成为模型可见的 error Tool Result。
+
+示例：
+
+```text
+examples/extensions/permission_gate.py
+```
+
+### Plan Mode
+
+Extension 内部保存：
+
+```text
+enabled
+tools_before_plan_mode
+```
+
+同一状态控制：
+
+```text
+set_active_tools
+context injection
+tool_call bash policy
+```
+
+退出时恢复进入 Plan Mode 前真实的 Tool 集合。
+
+示例：
+
+```text
+examples/extensions/plan_mode.py
+```
+
+### Subagent
+
+Parent Agent 不增加特殊 child-agent branch。
+
+```text
+Parent
+↓
+ToolCall: subagent
+↓
+Core ToolRuntime
+↓
+Child Agent + Child Session
+↓
+ToolResult
+↓
+Parent continues
+```
+
+示例：
+
+```text
+examples/extensions/subagent.py
+```
+
+Child history 不直接进入 Parent history。
+
+---
+
+## 20. 教程 00～11 与源码对应
+
+| Chapter | 主题 | Beta 主要落点 |
+| --- | --- | --- |
+| 00 | Model Boundary | `types.py`、`model.py`、`adapters/` |
+| 01 | Tool-driven Loop | `agent.py`、`tools.py` |
+| 02 | Agent Runtime / Events | `events.py`、`agent.py` |
+| 03 | Tool Runtime | `tools.py` |
+| 04 | Parallel Tools | `tools.py` |
+| 05 | Steering / Follow-up | `agent.py` |
+| 06 | Context Transform | `agent.py` |
+| 07 | Session Tree | `session.py` |
+| 08 | Context Compaction | `compaction.py`、`session.py` |
+| 09 | Skills | `skills.py`、`builtin_tools.py` |
+| 10 | Extension Runtime | `extensions/` |
+| 11 | Extension Composition | `examples/extensions/`、extension tests |
+
+Beta 已经不再保持“每章一套独立 demo Runtime”，而是把这些能力合并进同一个 Python package。
+
+---
+
+## 21. 当前运行入口
+
+### 安装
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+pip install -e ".[dev]"
+pytest
+```
+
+### DeepSeek CLI
+
+项目当前真实模型多轮 CLI：
+
+```bash
+python examples/deepseek_cli.py
+```
+
+需要在项目根目录 `.env` 配置：
+
+```text
+DEEPSEEK_API_KEY=...
+DEEPSEEK_MODEL=...
+```
+
+### Extension 示例
+
+```text
+examples/extensions/permission_gate.py
+examples/extensions/plan_mode.py
+examples/extensions/subagent.py
+```
+
+它们主要用于展示 Chapter 11 的组合方式，不是一个完整的终端产品入口。
+
+---
+
+## 22. 新能力应该放在哪里
 
 ### 新 Provider
-
-放在：
 
 ```text
 src/beta_agent/adapters/
 ```
 
-不要让 Agent Loop 认识 Provider-specific JSON。
+不要让 Agent Loop 认识 Provider JSON。
 
-### 新 Tool
-
-实现：
+### 新普通 Tool
 
 ```text
-Tool + Pydantic args model + handler
+Tool + Pydantic args_model + handler
 ```
 
-尽量不要修改 `ToolRuntime`。
-
-### 权限 / 审批 / 调用策略
-
-优先使用：
+### 外部可插拔 Tool
 
 ```text
-before_tool_call
-after_tool_call
+ExtensionTool + pi.register_tool()
 ```
 
-### 临时裁剪模型 Context
+### 权限 / Policy
 
-使用：
+优先：
+
+```text
+tool_call interception
+或现有 before_tool_call hook
+```
+
+### 临时 Context 修改
 
 ```text
 transform_context
+或 Extension context handler
 ```
 
-不要直接删除 Runtime history。
+### 产品模式切换
 
-### 下一轮要真正切换 Runtime 状态
-
-使用：
+优先组合：
 
 ```text
-prepare_next_turn
+Extension state
++ active tools
++ context
++ tool_call
 ```
 
-### 会话持久化 / 分支历史
+而不是给 `Agent` 增加 `mode` 分支。
 
-属于：
+### 持久化会话
 
 ```text
-Session 层
+SessionTree
 ```
 
-不要塞进 Agent Loop。
-
-### 长历史摘要
-
-属于：
+### 长历史压缩
 
 ```text
 Compaction + Session reconstruction
 ```
 
-### 任务方法论 / 领域流程
-
-优先考虑：
+### 领域工作方法
 
 ```text
 Skill
 ```
 
-而不是不断膨胀全局 system prompt。
-
----
-
-## 16. 当前有意没有加入的内容
-
-当前骨架停在教程 Chapter 09 左右，下面这些能力还没有进入 Core：
-
-- Extension Runtime；
-- Extension Composition；
-- Coding Agent 专用工具和 UI；
-- MCP；
-- sandbox / command approval；
-- 多 Provider 完整能力矩阵；
-- token accounting 与成本统计；
-- telemetry / tracing backend；
-- 更完整的 Session persistence backend；
-- 自动 compaction 策略；
-- 多 Agent orchestration。
-
-这些并不是“遗漏”，而是当前阶段主动控制范围。
-
-一个健康的演进顺序应该是：
+### 用户命令
 
 ```text
-先稳定 Core 语义
-    ↓
-保证测试覆盖
-    ↓
-再逐层增加扩展能力
+pi.register_command()
 ```
-
-而不是一开始就让 Agent Loop 同时承担所有功能。
 
 ---
 
-## 17. 推荐的阅读顺序
+## 23. 当前有意没有实现的内容
 
-如果准备真正理解并继续维护这个框架，建议按下面的顺序读源码：
+已经实现 Extension Runtime 以后，当前仍然主动不做：
+
+- Chapter 12 完整 Coding Agent Assembly；
+- read / write / edit / grep / bash 完整生产级工具集；
+- Workspace 抽象；
+- MCP；
+- sandbox / 容器隔离；
+- permission popup / TUI；
+- pip Extension package discovery；
+- hot reload / Extension API version negotiation；
+- 完整多 Provider capability matrix；
+- 精确 token accounting / cost tracking；
+- telemetry backend；
+- 更完整 Session storage backend；
+- 自动 Compaction 策略；
+- 进程级 Subagent isolation。
+
+这些应该在已有边界之上逐层加入，而不是提前把 Core 变成产品实现集合。
+
+---
+
+## 24. 推荐阅读顺序
+
+如果要继续维护 Beta，推荐按下面顺序读：
 
 ```text
 1. types.py
-   ↓
 2. model.py
-   ↓
 3. events.py
-   ↓
 4. tools.py
-   ↓
 5. agent.py
-   ↓
 6. session.py
-   ↓
 7. compaction.py
-   ↓
 8. skills.py
-   ↓
-9. adapters/openai_compatible.py
-   ↓
-10. tests/
+9. extensions/types.py
+10. extensions/runner.py
+11. extensions/wrapper.py
+12. extensions/bridge.py
+13. examples/extensions/
+14. tests/
 ```
 
-其中最值得反复理解的三个文件是：
+其中最值得反复理解的是：
 
 ```text
 agent.py
-→ Agent 的控制流与时间边界
+→ 时间与控制流边界
 
 tools.py
-→ Tool Call 的生命周期和并发语义
+→ Tool lifecycle / parallel invariant
 
 session.py
-→ Runtime history 之外的长期会话结构
+→ 长期历史结构
+
+extensions/runner.py + bridge.py
+→ 产品行为如何进入已有 seam 而不污染 Core
 ```
 
-理解这三块之后，后续第 10 章之后的扩展会容易很多。
+读完这四组以后，就具备进入 Chapter 12 Coding Agent Assembly 的基础。
