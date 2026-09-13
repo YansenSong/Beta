@@ -1,10 +1,16 @@
 """DeepSeek CLI 多轮对话测试。
 
 使用方式：
-    export DEEPSEEK_API_KEY="你的 API Key"
-    # 可选：覆盖模型，默认使用 deepseek-v4-flash
-    export DEEPSEEK_MODEL="deepseek-v4-flash"
-    python examples/deepseek_cli.py
+    1. 在项目根目录创建 .env：
+
+       DEEPSEEK_API_KEY=你的_API_Key
+       DEEPSEEK_MODEL=deepseek-v4-flash
+
+    2. 安装项目依赖：
+       pip install -e .
+
+    3. 启动：
+       python examples/deepseek_cli.py
 
 这个文件直接通过本地 Python 方式调用 Beta Agent，不经过 HTTP 服务或额外客户端层。
 """
@@ -13,17 +19,24 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from beta_agent import Agent
 from beta_agent.adapters import OpenAICompatibleAdapter
 
 
 async def chat() -> None:
+    # 显式读取项目根目录的 .env，避免从不同工作目录启动时找不到配置。
+    project_root = Path(__file__).resolve().parents[1]
+    load_dotenv(project_root / ".env")
+
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "未找到 DEEPSEEK_API_KEY，请先设置环境变量，例如：\n"
-            'export DEEPSEEK_API_KEY="你的 API Key"'
+            "未找到 DEEPSEEK_API_KEY，请在项目根目录的 .env 中配置：\n"
+            "DEEPSEEK_API_KEY=你的_API_Key"
         )
 
     model_name = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
