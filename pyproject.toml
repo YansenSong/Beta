@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "beta-agent"
+version = "0.1.0"
+description = "A small, extensible Python agent runtime inspired by Pi's architecture."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "YansenSong" }]
+dependencies = [
+  "httpx>=0.27,<1",
+  "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "pytest-asyncio>=0.23,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/beta_agent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]

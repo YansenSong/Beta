@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+import inspect
+from collections.abc import Awaitable, Callable
+
+from .session import SessionEntry, SessionTree
+from .types import Message
+
+Summarizer = Callable[[list[Message]], Awaitable[str] | str]
+
+
+async def compact_session(
+    session: SessionTree,
+    *,
+    summarize: Summarizer,
+    keep_last_messages: int = 8,
+    estimate_tokens: Callable[[list[Message]], int] | None = None,
+) -> SessionEntry | None:
+    """Append a branch-local compaction entry without deleting old history.
+
+    The retained tail starts at a user message when possible, which avoids keeping
+    a tool result after its originating assistant/tool-call pair was summarized.
+    """
+
+    branch = session.get_branch()
+    message_entries = [(i, e) for i, e in enumerate(branch) if e.type == "message"]
+    if len(message_entries) <= keep_last_messages:
+        return None
+
+    target_pos = max(0, len(message_entries) - keep_last_messages)
+    while target_pos > 0:
+        candidate = message_entries[target_pos][1]
+        if candidate.payload.get("role") == "user":
+            break
+        target_pos -= 1
+
+    first_kept_branch_index, first_kept = message_entries[target_pos]
+    prefix_entries = [e for e in branch[:first_kept_branch_index] if e.type == "message"]
+    if not prefix_entries:
+        return None
+
+    prefix_messages = [session_message(e) for e in prefix_entries]
+    summary = summarize(prefix_messages)
+    if inspect.isawaitable(summary):
+        summary = await summary
+
+    tokens_before = (
+        estimate_tokens([session_message(e) for _, e in message_entries])
+        if estimate_tokens
+        else sum(max(1, len(session_message(e).content) // 4) for _, e in message_entries)
+    )
+    return session.append_compaction(
+        summary=str(summary),
+        first_kept_entry_id=first_kept.id,
+        tokens_before=tokens_before,
+    )
+
+
+def session_message(entry: SessionEntry) -> Message:
+    from .session import _message_from_dict
+
+    return _message_from_dict(entry.payload)
