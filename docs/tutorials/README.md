@@ -1,8 +1,8 @@
 # Beta Agent 教学文档
 
-这组文档参考 [`learn-pi-agent`](https://github.com/yiz-hhh/learn-pi-agent) Chapter 00～09 的教学递进，并结合 Beta 当前 Python 实现重新组织。
+这组文档参考 `learn-pi-agent` Chapter 00～11 的教学递进，并结合 Beta 当前 Python 实现重新组织。
 
-它们**不是原教程的翻译**，也不会再创建一套配套 demo 代码。目标是让你直接围绕当前仓库理解：一个最小 Agent Framework 为什么会逐步长出 Message、Agent Loop、Event Stream、Tool Runtime、并行执行、Steering / Follow-up、Context、Session、Compaction 和 Skills。
+它们不是原教程的逐句翻译，而是围绕当前仓库解释：一个最小 Agent Framework 为什么会逐步长出 Message、Agent Loop、Event Stream、Tool Runtime、并行执行、Steering / Follow-up、Context、Session、Compaction、Skills，以及最终的 Extension Runtime 与 Extension Composition。
 
 ## 建议学习顺序
 
@@ -18,35 +18,37 @@
 | [07](07-session-tree.md) | 可分支 Session Tree | `session.py` |
 | [08](08-context-compaction.md) | Append-only Compaction | `compaction.py`、`session.py` |
 | [09](09-skills.md) | Skill Catalog 与按需加载 | `skills.py`、`builtin_tools.py` |
+| [10](10-extension-runtime.md) | Extension API、Runner、Loader、Bridge | `extensions/` |
+| [11](11-extension-composition.md) | Permission、Plan Mode、Subagent 组合 | `examples/extensions/` |
 
 ## 怎么读
 
 推荐每章做三件事：
 
-1. 先只看“为什么需要这一层”，不要急着研究实现细节；
+1. 先看“为什么需要这一层”，不要急着记函数名；
 2. 再打开文档列出的 Beta 源码，对照职责边界；
-3. 最后回答章节末尾的检查题，确认自己理解的是设计而不是函数名。
+3. 最后看对应测试，确认关键 invariant 是怎样被锁住的。
 
-整套课程里最重要的一条主线是：
+整套课程最重要的一条主线是：
 
 ```text
 先保持 Core 简单
     ↓
 当复杂度真正出现
     ↓
-找到稳定边界
+找到稳定 seam
     ↓
-把变化隔离到边界外
+把变化隔离到 seam 外
 ```
 
-例如 Provider 差异留在 Adapter，Tool 复杂度留在 ToolRuntime，历史结构留在 Session，领域流程留在 Skill。Agent Loop 只保留必须稳定的控制流。
+Provider 差异留在 Adapter，Tool 复杂度留在 ToolRuntime，历史结构留在 Session，领域知识留在 Skill，而 Permission / Plan Mode / Subagent 这类产品行为则留在 Extension。Agent Loop 只保留必须稳定的控制流。
 
 ## 与其他文档的关系
 
-- [`../FRAMEWORK.md`](../FRAMEWORK.md)：完整介绍当前 Beta 框架有哪些模块；
-- [`../ARCHITECTURE.md`](../ARCHITECTURE.md)：精简版架构边界；
-- 本目录：按“问题逐步出现”的顺序解释为什么会形成这些模块。
+- `../FRAMEWORK.md`：完整介绍 Beta 框架模块；
+- `../ARCHITECTURE.md`：精简版架构边界；
+- 本目录：按“问题逐步出现”的顺序解释为什么形成这些模块。
 
 ## 范围
 
-目前教程只覆盖 Chapter 00～09，因为这正好对应 Beta 当前 Core 的主要能力。原教程 Chapter 10～12 涉及 Extension Runtime、Extension Composition 和 Coding Agent，可以等 Beta 真正加入相应实现后，再继续扩展这里的课程。
+目前覆盖 Chapter 00～11。Chapter 12 会进入 Coding Agent Assembly：read / write / edit / grep / bash、Workspace 与前面所有 Runtime 能力真正组装到一起。在进入第 12 章之前，Chapter 10～11 的目标是先证明 Extension 能在不污染 Agent Core 的前提下改变完整 Agent 行为。
