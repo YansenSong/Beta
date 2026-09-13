@@ -7,7 +7,7 @@ name = "beta-agent"
 version = "0.1.0"
 description = "A small, extensible Python agent runtime inspired by Pi's architecture."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 authors = [{ name = "YansenSong" }]
 dependencies = [
   "httpx>=0.27,<1",
