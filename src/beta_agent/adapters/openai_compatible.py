@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import httpx
 
-from ..types import Message, ModelEvent, ToolCall
+from ..cancellation import CancellationToken
+from ..provider_messages import ProviderImageContent, ProviderMessage, ProviderTextContent
+from ..types import AgentMessage, ModelEvent, ToolCall
 
 
 class OpenAICompatibleAdapter:
@@ -31,81 +34,105 @@ class OpenAICompatibleAdapter:
         self,
         *,
         system_prompt: str,
-        messages: Sequence[Message],
+        messages: Sequence[ProviderMessage],
         tools: Sequence[object],
+        cancellation: CancellationToken | None = None,
     ) -> AsyncIterator[ModelEvent]:
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": self._messages(system_prompt, messages),
-            "tools": [self._tool_schema(tool) for tool in tools],
-            "stream": True,
-            **self.extra_body,
-        }
-        if not payload["tools"]:
-            payload.pop("tools")
-
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        partial = Message.assistant("", stop_reason="stop")
-        yield ModelEvent(type="start", partial=partial)
-
         text = ""
         tool_parts: dict[int, dict[str, Any]] = {}
         finish_reason = "stop"
+        try:
+            if cancellation is not None:
+                cancellation.throw_if_cancelled()
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "messages": self._messages(system_prompt, messages),
+                "tools": [self._tool_schema(tool) for tool in tools],
+                "stream": True,
+                **self.extra_body,
+            }
+            if not payload["tools"]:
+                payload.pop("tools")
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            async with client.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    chunk = json.loads(data)
-                    choice = chunk.get("choices", [{}])[0]
-                    delta = choice.get("delta", {})
-                    if delta.get("content"):
-                        text += delta["content"]
-                    for item in delta.get("tool_calls") or []:
-                        index = int(item.get("index", 0))
-                        acc = tool_parts.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                        if item.get("id"):
-                            acc["id"] = item["id"]
-                        function = item.get("function") or {}
-                        if function.get("name"):
-                            acc["name"] += function["name"]
-                        if function.get("arguments"):
-                            acc["arguments"] += function["arguments"]
-                    if choice.get("finish_reason"):
-                        finish_reason = choice["finish_reason"]
-                    partial = Message.assistant(
-                        text,
-                        tool_calls=self._tool_calls(tool_parts),
-                        stop_reason=self._map_finish_reason(finish_reason),
-                    )
-                    yield ModelEvent(type="update", partial=partial)
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            partial = AgentMessage.assistant("", stop_reason="stop")
+            yield ModelEvent(type="start", partial=partial)
 
-        final = Message.assistant(
-            text,
-            tool_calls=self._tool_calls(tool_parts),
-            stop_reason=self._map_finish_reason(finish_reason),
-        )
-        yield ModelEvent(type="done", partial=final)
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if cancellation is not None:
+                            cancellation.throw_if_cancelled()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        chunk = json.loads(data)
+                        choice = chunk.get("choices", [{}])[0]
+                        delta = choice.get("delta", {})
+                        if delta.get("content"):
+                            text += delta["content"]
+                        for item in delta.get("tool_calls") or []:
+                            index = int(item.get("index", 0))
+                            acc = tool_parts.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                            if item.get("id"):
+                                acc["id"] = item["id"]
+                            function = item.get("function") or {}
+                            if function.get("name"):
+                                acc["name"] += function["name"]
+                            if function.get("arguments"):
+                                acc["arguments"] += function["arguments"]
+                        if choice.get("finish_reason"):
+                            finish_reason = choice["finish_reason"]
+                        partial = AgentMessage.assistant(
+                            text,
+                            tool_calls=self._tool_calls(tool_parts),
+                            stop_reason=self._map_finish_reason(finish_reason),
+                        )
+                        yield ModelEvent(type="update", partial=partial)
 
-    def _messages(self, system_prompt: str, messages: Sequence[Message]) -> list[dict[str, Any]]:
+            final = AgentMessage.assistant(
+                text,
+                tool_calls=self._tool_calls(tool_parts),
+                stop_reason=self._map_finish_reason(finish_reason),
+            )
+            yield ModelEvent(type="done", partial=final)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Provider/network/decoding failures are part of the model stream
+            # contract. Agent retains a defensive catch for non-conforming
+            # third-party adapters.
+            error = AgentMessage.assistant(
+                text,
+                tool_calls=self._tool_calls(tool_parts),
+                stop_reason="error",
+                error_message=str(exc),
+                error_type=type(exc).__name__,
+            )
+            yield ModelEvent(type="error", partial=error)
+
+    def _messages(self, system_prompt: str, messages: Sequence[ProviderMessage]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         if system_prompt:
             result.append({"role": "system", "content": system_prompt})
         for message in messages:
+            if not isinstance(message, ProviderMessage):
+                raise TypeError("OpenAICompatibleAdapter requires ProviderMessage values")
             if message.role in {"system", "user"}:
-                result.append({"role": message.role, "content": message.content})
+                result.append({"role": message.role, "content": self._content(message.content)})
             elif message.role == "assistant":
-                item: dict[str, Any] = {"role": "assistant", "content": message.content or None}
+                item: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": self._content(message.content) or None,
+                }
                 if message.tool_calls:
                     item["tool_calls"] = [
                         {
@@ -117,13 +144,35 @@ class OpenAICompatibleAdapter:
                     ]
                 result.append(item)
             elif message.role == "tool":
-                result.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": message.tool_call_id,
-                        "content": message.content,
-                    }
-                )
+                item: dict[str, Any] = {
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id,
+                    "content": self._content(message.content),
+                }
+                if message.name:
+                    item["name"] = message.name
+                result.append(item)
+        return result
+
+    def _content(
+        self,
+        content: Sequence[ProviderTextContent | ProviderImageContent],
+    ) -> str | list[dict[str, Any]]:
+        if len(content) == 1 and isinstance(content[0], ProviderTextContent):
+            return content[0].text
+        result: list[dict[str, Any]] = []
+        for block in content:
+            if isinstance(block, ProviderTextContent):
+                result.append({"type": "text", "text": block.text})
+            elif isinstance(block, ProviderImageContent):
+                image_url = block.url
+                if image_url is None and block.data is not None:
+                    image_url = (
+                        block.data
+                        if block.data.startswith("data:")
+                        else f"data:{block.media_type or 'application/octet-stream'};base64,{block.data}"
+                    )
+                result.append({"type": "image_url", "image_url": {"url": image_url}})
         return result
 
     def _tool_schema(self, tool: object) -> dict[str, Any]:

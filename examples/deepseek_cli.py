@@ -86,7 +86,7 @@ async def chat() -> None:
                     and event.message is not None
                     and event.message.role == "assistant"
                 ):
-                    text = event.message.content
+                    text = event.message.text
                     if len(text) >= printed_length:
                         print(text[printed_length:], end="", flush=True)
                         printed_length = len(text)
@@ -97,7 +97,7 @@ async def chat() -> None:
             # 如果流式 update 没打印完整，就在这里补齐。
             assistants = [message for message in messages if message.role == "assistant"]
             if assistants:
-                final_text = assistants[-1].content
+                final_text = assistants[-1].text
                 if len(final_text) > printed_length:
                     print(final_text[printed_length:], end="", flush=True)
 

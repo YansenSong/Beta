@@ -98,7 +98,7 @@ async def _chat(arguments: argparse.Namespace) -> None:
                         and event.message is not None
                         and event.message.role == "assistant"
                     ):
-                        text = event.message.content
+                        text = event.message.text
                         if len(text) >= printed_length:
                             print(text[printed_length:], end="", flush=True)
                             printed_length = len(text)
@@ -108,8 +108,8 @@ async def _chat(arguments: argparse.Namespace) -> None:
                         print(f"[tool error] {event.tool_name}: {event.error}")
                 messages = await stream.result()
                 assistants = [message for message in messages if message.role == "assistant"]
-                if assistants and len(assistants[-1].content) > printed_length:
-                    print(assistants[-1].content[printed_length:], end="", flush=True)
+                if assistants and len(assistants[-1].text) > printed_length:
+                    print(assistants[-1].text[printed_length:], end="", flush=True)
                 print("\n")
             except Exception as exc:
                 print(f"\n[请求失败] {exc}\n")

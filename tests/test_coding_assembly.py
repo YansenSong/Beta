@@ -163,7 +163,7 @@ async def test_optional_compaction_replaces_agent_context_and_survives_reload(tm
             session_file=session_path,
             compaction=CodingCompactionOptions(
                 keep_last_messages=2,
-                summarize=lambda messages: "summary: " + ",".join(message.content for message in messages),
+                summarize=lambda messages: "summary: " + ",".join(message.text for message in messages),
             ),
         )
     )

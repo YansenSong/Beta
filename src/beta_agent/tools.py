@@ -7,13 +7,14 @@ from typing import Any, Awaitable, Callable, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from .types import AgentContext, AgentEvent, Message, ToolBatchResult, ToolCall, ToolResult
+from .cancellation import CancellationToken, call_with_optional_cancellation
+from .types import AgentContext, AgentEvent, AgentMessage, ToolBatchResult, ToolCall, ToolResult
 
 ArgsT = TypeVar("ArgsT", bound=BaseModel)
 Emit = Callable[[AgentEvent], Awaitable[None]]
 ToolHandler = Callable[[ArgsT, "ToolExecutionContext"], Awaitable[ToolResult | str] | ToolResult | str]
-BeforeToolCall = Callable[[ToolCall, BaseModel, AgentContext], Awaitable["BeforeToolCallDecision | None"] | "BeforeToolCallDecision | None"]
-AfterToolCall = Callable[[ToolCall, BaseModel, ToolResult, bool, AgentContext], Awaitable["AfterToolCallPatch | None"] | "AfterToolCallPatch | None"]
+BeforeToolCall = Callable[..., Awaitable["BeforeToolCallDecision | None"] | "BeforeToolCallDecision | None"]
+AfterToolCall = Callable[..., Awaitable["AfterToolCallPatch | None"] | "AfterToolCallPatch | None"]
 
 
 @dataclass(slots=True)
@@ -32,14 +33,51 @@ class AfterToolCallPatch:
     terminate: bool | None = None
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class ToolExecutionContext:
     tool_call_id: str
     tool_name: str
+    cancellation: CancellationToken
     _emit: Emit
+
+    def __init__(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        cancellation_or_emit: CancellationToken | Emit | None = None,
+        emit: Emit | None = None,
+        *,
+        cancellation: CancellationToken | None = None,
+        _emit: Emit | None = None,
+    ) -> None:
+        """Support both the P0 ``(id, name, token, emit)`` and old shape."""
+
+        if _emit is not None:
+            emit_value = _emit
+        elif isinstance(cancellation_or_emit, CancellationToken):
+            emit_value = emit
+        else:
+            emit_value = cancellation_or_emit if callable(cancellation_or_emit) else emit
+        if emit_value is None:
+            raise TypeError("ToolExecutionContext requires an event emitter")
+
+        if cancellation is not None:
+            token = cancellation
+        elif isinstance(cancellation_or_emit, CancellationToken):
+            token = cancellation_or_emit
+        elif isinstance(emit, CancellationToken):
+            token = emit
+        else:
+            token = CancellationToken()
+
+        self.tool_call_id = tool_call_id
+        self.tool_name = tool_name
+        self.cancellation = token
+        self._emit = emit_value
 
     async def progress(self, partial_result: Any) -> None:
         # 长耗时 Tool 可以主动上报中间状态；这些 update 只用于 UI/Tracing，不写入消息历史。
+        self.cancellation.throw_if_cancelled()
         await self._emit(
             AgentEvent(
                 type="tool_execution_update",
@@ -84,6 +122,7 @@ class _Finalized:
     call: ToolCall
     result: ToolResult
     is_error: bool
+    aborted: bool = False
 
 
 class ToolRuntime:
@@ -106,98 +145,299 @@ class ToolRuntime:
         context: AgentContext,
         calls: list[ToolCall],
         emit: Emit,
+        cancellation: CancellationToken | None = None,
     ) -> ToolBatchResult:
+        token = cancellation or CancellationToken()
+        if not calls:
+            return ToolBatchResult(messages=[])
+
         force_sequential = self.execution_mode == "sequential" or any(
             next((t for t in context.tools if t.name == call.name), None)
             and next(t for t in context.tools if t.name == call.name).execution_mode == "sequential"
             for call in calls
         )
-        if force_sequential:
-            finalized = []
-            for call in calls:
+        try:
+            if force_sequential:
+                finalized, aborted = await self._execute_sequential(context, calls, emit, token)
+            else:
+                finalized, aborted = await self._execute_parallel(context, calls, emit, token)
+            messages = await self._commit(finalized, emit)
+            terminate = bool(finalized) and all(item.result.terminate for item in finalized)
+            return ToolBatchResult(messages=messages, terminate=terminate, aborted=aborted)
+        except asyncio.CancelledError:
+            # Root Agent cancellation may arrive while a preflight or a child
+            # task is running.  Convert the entire batch to a protocol-complete
+            # result set before returning control to Agent.
+            token.cancel()
+            finalized = [_aborted(call) for call in calls]
+            messages = await self._commit(finalized, emit)
+            return ToolBatchResult(messages=messages, aborted=True)
+
+    async def _execute_sequential(
+        self,
+        context: AgentContext,
+        calls: list[ToolCall],
+        emit: Emit,
+        cancellation: CancellationToken,
+    ) -> tuple[list[_Finalized], bool]:
+        finalized: list[_Finalized] = []
+        for index, call in enumerate(calls):
+            if cancellation.cancelled:
+                return await self._abort_remaining(calls, index, finalized, emit), True
+
+            started = False
+            ended = False
+            try:
                 await self._emit_start(call, emit)
-                prepared = await self._prepare(context, call)
-                if isinstance(prepared, _Finalized):
-                    item = prepared
-                else:
-                    item = await self._execute_prepared(context, prepared, emit)
+                started = True
+                prepared = await self._prepare(context, call, cancellation)
+                item = prepared if isinstance(prepared, _Finalized) else await self._execute_prepared(
+                    context, prepared, emit, cancellation
+                )
                 await self._emit_end(item, emit)
+                ended = True
                 finalized.append(item)
-            return await self._commit(finalized, emit)
+            except asyncio.CancelledError:
+                cancellation.cancel()
+                if started and not ended:
+                    item = _aborted(call)
+                    await self._emit_end(item, emit)
+                    finalized.append(item)
+                return await self._abort_remaining(calls, index + 1, finalized, emit), True
+        return finalized, False
 
-        # Pi 风格的并行语义：lookup / 参数整理 / 校验 / before hook 仍按模型给出的 source order 执行。
-        # 真正并发的是 execute 阶段，避免多个权限确认、参数准备同时发生而让时序失控。
-        entries: list[_Finalized | _Prepared] = []
-        for call in calls:
-            await self._emit_start(call, emit)
-            prepared = await self._prepare(context, call)
-            if isinstance(prepared, _Finalized):
-                await self._emit_end(prepared, emit)
-            entries.append(prepared)
+    async def _execute_parallel(
+        self,
+        context: AgentContext,
+        calls: list[ToolCall],
+        emit: Emit,
+        cancellation: CancellationToken,
+    ) -> tuple[list[_Finalized], bool]:
+        # Lookup / argument preparation / validation / before hook remain in
+        # source order. Only the prepared execute phase is concurrent.
+        entries: list[_Finalized | _Prepared | None] = [None] * len(calls)
+        for index, call in enumerate(calls):
+            if cancellation.cancelled:
+                finalized = await self._abort_from_entries(calls, entries, index, emit)
+                return finalized, True
+            try:
+                await self._emit_start(call, emit)
+                prepared = await self._prepare(context, call, cancellation)
+                entries[index] = prepared
+                if isinstance(prepared, _Finalized):
+                    await self._emit_end(prepared, emit)
+            except asyncio.CancelledError:
+                cancellation.cancel()
+                entries[index] = _aborted(call)
+                await self._emit_end(entries[index], emit)
+                finalized = await self._abort_from_entries(calls, entries, index + 1, emit)
+                return finalized, True
 
-        async def run(entry: _Finalized | _Prepared) -> _Finalized:
-            if isinstance(entry, _Finalized):
-                return entry
-            item = await self._execute_prepared(context, entry, emit)
-            # execution_end 跟随真实完成时间，因此并行时事件可能按 B -> C -> A 的顺序出现。
+        tasks: dict[int, asyncio.Task[_Finalized]] = {}
+
+        async def run(index: int, entry: _Prepared) -> _Finalized:
+            item = await self._execute_prepared(context, entry, emit, cancellation)
+            # execution_end follows completion order; the final message commit
+            # below still consumes the gathered values in source order.
             await self._emit_end(item, emit)
             return item
 
-        # asyncio.gather 的返回值保持输入顺序。
-        # 所以执行完成事件可以是 completion order，而最终 Tool Result 仍能按 source order 写回 history。
-        finalized = await asyncio.gather(*(run(entry) for entry in entries))
-        return await self._commit(finalized, emit)
+        for index, entry in enumerate(entries):
+            if isinstance(entry, _Prepared):
+                tasks[index] = asyncio.create_task(run(index, entry))
 
-    async def _prepare(self, context: AgentContext, call: ToolCall) -> _Prepared | _Finalized:
+        try:
+            results = await asyncio.gather(*tasks.values())
+            for index, item in zip(tasks, results):
+                entries[index] = item
+            return [entry for entry in entries if isinstance(entry, _Finalized)], False
+        except asyncio.CancelledError:
+            cancellation.cancel()
+            for task in tasks.values():
+                if not task.done():
+                    task.cancel()
+            task_results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+            for index, task_result in zip(tasks, task_results):
+                if isinstance(task_result, _Finalized):
+                    entries[index] = task_result
+                else:
+                    entries[index] = _aborted(calls[index])
+                    await self._emit_end(entries[index], emit)
+            finalized = [entry for entry in entries if isinstance(entry, _Finalized)]
+            return finalized, True
+
+    async def _abort_remaining(
+        self,
+        calls: list[ToolCall],
+        start: int,
+        finalized: list[_Finalized],
+        emit: Emit,
+    ) -> list[_Finalized]:
+        for call in calls[start:]:
+            await self._emit_start(call, emit)
+            item = _aborted(call)
+            await self._emit_end(item, emit)
+            finalized.append(item)
+        return finalized
+
+    async def _abort_from_entries(
+        self,
+        calls: list[ToolCall],
+        entries: list[_Finalized | _Prepared | None],
+        start: int,
+        emit: Emit,
+    ) -> list[_Finalized]:
+        del start
+        for index in range(len(calls)):
+            entry = entries[index]
+            if isinstance(entry, _Finalized):
+                continue
+            # A prepared entry already emitted tool_execution_start during
+            # source-order preflight, so only unprepared entries need a start.
+            if entry is None:
+                await self._emit_start(calls[index], emit)
+            item = _aborted(calls[index])
+            entries[index] = item
+            await self._emit_end(item, emit)
+        return [entry if isinstance(entry, _Finalized) else _aborted(calls[index]) for index, entry in enumerate(entries)]
+
+    async def _prepare(
+        self,
+        context: AgentContext,
+        call: ToolCall,
+        cancellation: CancellationToken,
+    ) -> _Prepared | _Finalized:
         # preflight: lookup -> prepare arguments -> schema validate -> before hook。
         # 任一步失败都会被规范化成 Tool Result，让模型下一轮能够“看到失败原因”并自我修正。
+        cancellation.throw_if_cancelled()
         tool = next((item for item in context.tools if item.name == call.name), None)
         if tool is None:
-            return _Finalized(call, ToolResult(content=f"Tool {call.name!r} not found"), True)
+            return _Finalized(
+                call,
+                ToolResult(content=f"Tool {call.name!r} not found", details={"stage": "tool_execute"}),
+                True,
+            )
 
         try:
             raw_args = call.arguments
             if tool.prepare_arguments:
                 raw_args = tool.prepare_arguments(raw_args)
             args = tool.args_model.model_validate(raw_args)
+        except asyncio.CancelledError:
+            raise
         except (ValidationError, ValueError, TypeError) as exc:
-            return _Finalized(call, ToolResult(content=f"Invalid arguments: {exc}"), True)
+            return _Finalized(
+                call,
+                ToolResult(
+                    content=f"Invalid arguments: {exc}",
+                    details={"stage": "prepare_arguments", "exception_type": type(exc).__name__},
+                ),
+                True,
+            )
+        except Exception as exc:
+            return _Finalized(
+                call,
+                ToolResult(
+                    content=f"Tool arguments could not be prepared: {exc}",
+                    details={"stage": "prepare_arguments", "exception_type": type(exc).__name__},
+                ),
+                True,
+            )
 
         if self.before_tool_call:
-            decision = self.before_tool_call(call, args, context)
-            if inspect.isawaitable(decision):
-                decision = await decision
+            try:
+                decision = await call_with_optional_cancellation(
+                    self.before_tool_call,
+                    call,
+                    args,
+                    context,
+                    cancellation=cancellation,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Permission and policy hooks fail closed. The target Tool is
+                # never called when its before hook cannot make a decision.
+                return _Finalized(
+                    call,
+                    ToolResult(
+                        content=f"Tool execution blocked because before_tool_call hook failed: {exc}",
+                        details={"stage": "before_tool_call", "exception_type": type(exc).__name__},
+                    ),
+                    True,
+                )
+            cancellation.throw_if_cancelled()
             if decision and decision.block:
                 return _Finalized(
                     call,
                     ToolResult(
                         content=decision.reason or "Tool execution was blocked",
                         terminate=decision.terminate,
+                        details={"stage": "before_tool_call"},
                     ),
                     True,
                 )
         return _Prepared(call, tool, args)
 
-    async def _execute_prepared(self, context: AgentContext, prepared: _Prepared, emit: Emit) -> _Finalized:
+    async def _execute_prepared(
+        self,
+        context: AgentContext,
+        prepared: _Prepared,
+        emit: Emit,
+        cancellation: CancellationToken,
+    ) -> _Finalized:
+        cancellation.throw_if_cancelled()
         try:
             result = await prepared.tool.execute(
                 prepared.args,
-                ToolExecutionContext(prepared.call.id, prepared.call.name, emit),
+                ToolExecutionContext(
+                    prepared.call.id,
+                    prepared.call.name,
+                    emit,
+                    cancellation=cancellation,
+                ),
             )
             is_error = False
         except asyncio.CancelledError:
-            # CancelledError 表示上层真的取消任务，不应该伪装成普通 Tool 失败继续跑。
+            # The batch boundary turns this into an aborted Tool Result. A
+            # direct Tool.execute caller still receives real task cancellation.
             raise
         except Exception as exc:  # tool failures become model-visible results
-            result = ToolResult(content=f"Tool execution failed: {exc}")
+            result = ToolResult(
+                content=f"Tool execution failed: {exc}",
+                details={"stage": "tool_execute", "exception_type": type(exc).__name__},
+            )
             is_error = True
 
         # after hook 位于 Tool 真正执行之后、tool_execution_end 事件之前，
         # 可以统一补充 metadata、改写展示内容或设置 terminate，而不用侵入具体 Tool。
         if self.after_tool_call:
-            patch = self.after_tool_call(prepared.call, prepared.args, result, is_error, context)
-            if inspect.isawaitable(patch):
-                patch = await patch
+            try:
+                patch = await call_with_optional_cancellation(
+                    self.after_tool_call,
+                    prepared.call,
+                    prepared.args,
+                    result,
+                    is_error,
+                    context,
+                    cancellation=cancellation,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return _Finalized(
+                    prepared.call,
+                    ToolResult(
+                        content=f"Tool executed, but after_tool_call hook failed: {exc}",
+                        details={
+                            "stage": "after_tool_call",
+                            "exception_type": type(exc).__name__,
+                            "tool_executed": True,
+                            "original_result_details": result.details,
+                        },
+                    ),
+                    True,
+                )
             if patch:
                 if patch.content is not None:
                     result.content = patch.content
@@ -233,11 +473,11 @@ class ToolRuntime:
             )
         )
 
-    async def _commit(self, finalized: list[_Finalized], emit: Emit) -> ToolBatchResult:
+    async def _commit(self, finalized: list[_Finalized], emit: Emit) -> list[AgentMessage]:
         # 只有最终 Tool Result 会进入对话历史；progress/update 事件不会污染模型上下文。
-        messages: list[Message] = []
+        messages: list[AgentMessage] = []
         for item in finalized:
-            message = Message.tool_result(
+            message = AgentMessage.tool_result(
                 tool_call_id=item.call.id,
                 name=item.call.name,
                 content=item.result.content,
@@ -245,11 +485,22 @@ class ToolRuntime:
                 details=item.result.details,
                 added_tool_names=item.result.added_tool_names,
                 terminate=item.result.terminate,
+                aborted=item.aborted,
             )
             await emit(AgentEvent(type="message_start", message=message))
             await emit(AgentEvent(type="message_end", message=message))
             messages.append(message)
 
-        # 只有本批所有结果都明确要求 terminate 时才停止，避免某一个工具意外终止整批任务。
-        terminate = bool(finalized) and all(item.result.terminate for item in finalized)
-        return ToolBatchResult(messages=messages, terminate=terminate)
+        return messages
+
+
+def _aborted(call: ToolCall) -> _Finalized:
+    return _Finalized(
+        call,
+        ToolResult(
+            content="Operation aborted",
+            details={"stage": "tool_execute", "exception_type": "CancelledError"},
+        ),
+        True,
+        aborted=True,
+    )

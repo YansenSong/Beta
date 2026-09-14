@@ -4,9 +4,9 @@ import inspect
 from collections.abc import Awaitable, Callable
 
 from .session import SessionEntry, SessionTree
-from .types import Message
+from .types import AgentMessage, Message
 
-Summarizer = Callable[[list[Message]], Awaitable[str] | str]
+Summarizer = Callable[[list[AgentMessage]], Awaitable[str] | str]
 
 
 async def compact_session(
@@ -14,7 +14,7 @@ async def compact_session(
     *,
     summarize: Summarizer,
     keep_last_messages: int = 8,
-    estimate_tokens: Callable[[list[Message]], int] | None = None,
+    estimate_tokens: Callable[[list[AgentMessage]], int] | None = None,
 ) -> SessionEntry | None:
     """Append a branch-local compaction entry without deleting old history.
 
@@ -54,7 +54,7 @@ async def compact_session(
     tokens_before = (
         estimate_tokens([session_message(e) for _, e in message_entries])
         if estimate_tokens
-        else sum(max(1, len(session_message(e).content) // 4) for _, e in message_entries)
+        else sum(max(1, len(session_message(e).text) // 4) for _, e in message_entries)
     )
     return session.append_compaction(
         summary=str(summary),
@@ -63,7 +63,7 @@ async def compact_session(
     )
 
 
-def session_message(entry: SessionEntry) -> Message:
+def session_message(entry: SessionEntry) -> AgentMessage:
     from .session import _message_from_dict
 
     return _message_from_dict(entry.payload)

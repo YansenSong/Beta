@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from ..cancellation import CancellationToken, call_with_optional_cancellation
 from ..tools import Tool
-from ..types import Message
+from ..types import AgentMessage
 from .types import (
     ContextEvent,
     ExtensionAPI,
@@ -87,44 +89,71 @@ class ExtensionRunner:
         if self._apply_tools:
             self._apply_tools(tools)
 
-    async def emit(self, event: str, payload: Any) -> list[Any]:
+    async def emit(
+        self,
+        event: str,
+        payload: Any,
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> list[Any]:
         results: list[Any] = []
         ctx = self.create_context()
         for handler in list(self._handlers.get(event, [])):
             try:
-                value = handler(payload, ctx)
-                if inspect.isawaitable(value):
-                    value = await value
+                if cancellation is not None:
+                    cancellation.throw_if_cancelled()
+                value = await call_with_optional_cancellation(handler, payload, ctx, cancellation=cancellation)
                 results.append(value)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 self.errors.append(ExtensionError(stage="handler", event=event, message=str(exc)))
         return results
 
-    async def emit_tool_call(self, event: ToolCallEvent) -> ToolCallDecision | None:
+    async def emit_tool_call(
+        self,
+        event: ToolCallEvent,
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> ToolCallDecision | None:
         ctx = self.create_context()
         for handler in list(self._handlers.get("tool_call", [])):
             try:
-                value = handler(event, ctx)
-                if inspect.isawaitable(value):
-                    value = await value
+                if cancellation is not None:
+                    cancellation.throw_if_cancelled()
+                value = await call_with_optional_cancellation(handler, event, ctx, cancellation=cancellation)
                 if isinstance(value, ToolCallDecision) and value.block:
                     return value
                 if isinstance(value, dict) and value.get("block"):
                     return ToolCallDecision(block=True, reason=str(value.get("reason", "")), terminate=bool(value.get("terminate", False)))
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 self.errors.append(ExtensionError(stage="handler", event="tool_call", message=str(exc)))
         return None
 
-    async def emit_context(self, messages: list[Message]) -> list[Message]:
+    async def emit_context(
+        self,
+        messages: list[AgentMessage],
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> list[AgentMessage]:
         current = list(messages)
         ctx = self.create_context()
         for handler in list(self._handlers.get("context", [])):
             try:
-                value = handler(ContextEvent(messages=current), ctx)
-                if inspect.isawaitable(value):
-                    value = await value
+                if cancellation is not None:
+                    cancellation.throw_if_cancelled()
+                value = await call_with_optional_cancellation(
+                    handler,
+                    ContextEvent(messages=current),
+                    ctx,
+                    cancellation=cancellation,
+                )
                 if value is not None:
                     current = list(value)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 self.errors.append(ExtensionError(stage="handler", event="context", message=str(exc)))
         return current
@@ -135,15 +164,20 @@ class ExtensionRunner:
     def get_commands(self) -> list[RegisteredCommand]:
         return list(self._commands)
 
-    async def run_command(self, input_: str) -> None:
+    async def run_command(self, input_: str, *, cancellation: CancellationToken | None = None) -> None:
         raw = input_.strip().lstrip("/")
         name, _, args = raw.partition(" ")
         command = next((item for item in self._commands if item.name == name), None)
         if command is None:
             raise KeyError(f"Command not found: {name}")
-        value = command.handler(args.strip(), self.create_context())
-        if inspect.isawaitable(value):
-            await value
+        if cancellation is not None:
+            cancellation.throw_if_cancelled()
+        await call_with_optional_cancellation(
+            command.handler,
+            args.strip(),
+            self.create_context(),
+            cancellation=cancellation,
+        )
 
     def _create_api(self, pending: _PendingRegistrations) -> ExtensionAPI:
         return ExtensionAPI(

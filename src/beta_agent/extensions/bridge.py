@@ -1,57 +1,135 @@
 from __future__ import annotations
-import inspect
+
+import asyncio
 from dataclasses import dataclass
 from typing import Any
+
 from ..agent import Agent
+from ..cancellation import CancellationToken, call_with_optional_cancellation
 from ..events import EventStream
 from ..tools import BeforeToolCallDecision, Tool
-from ..types import AgentEvent, Message
+from ..types import AgentEvent, AgentMessage
 from .runner import ExtensionRunner
 from .types import MessageEndEvent, ToolCallEvent, TurnEndEvent
 
+
 @dataclass(slots=True)
 class ExtensionHost:
-    """Harness layer that binds ExtensionRunner to one Agent without changing Agent Core."""
+    """Harness layer that binds ExtensionRunner to one Agent."""
+
     agent: Agent
     runner: ExtensionRunner
     persist_messages: bool
     _previous_before: Any
     _previous_transform: Any
     _previous_tools: list[Tool]
+    _active_outer: EventStream[list[AgentMessage]] | None = None
 
-    def stream(self, prompt) -> EventStream[list[Message]]:
+    def stream(self, prompt) -> EventStream[list[AgentMessage]]:
+        # Create the inner stream synchronously. This makes Agent's active-run
+        # guard visible to callers before the outer host task is scheduled.
+        self._ensure_outer_idle()
+        inner = self.agent.stream(prompt)
+
         async def drive(emit):
-            inner = self.agent.stream(prompt)
-            async for event in inner:
-                await self._handle_event(event)
-                await emit(event)
-            return await inner.result()
-        return EventStream(drive)
+            try:
+                async for event in inner:
+                    await self._handle_event(event)
+                    await emit(event)
+                return await inner.result()
+            except asyncio.CancelledError:
+                # Cancelling only the host wrapper must never leave the Agent
+                # provider/tool task running underneath it.
+                self.agent.abort()
+                await inner.wait()
+                raise
 
-    async def run(self, prompt) -> list[Message]:
+        outer = EventStream(drive, on_cancel=lambda _: self.agent.abort())
+        self._active_outer = outer
+
+        def cancel_inner_if_needed(completed: EventStream[list[AgentMessage]]) -> None:
+            if completed.cancel_requested and not inner.done:
+                self.agent.abort()
+            if self._active_outer is completed:
+                self._active_outer = None
+
+        outer.add_done_callback(cancel_inner_if_needed)
+        return outer
+
+    async def run(self, prompt) -> list[AgentMessage]:
         return await self.stream(prompt).result()
 
-    def continue_stream(self) -> EventStream[list[Message]]:
+    def continue_stream(self) -> EventStream[list[AgentMessage]]:
+        self._ensure_outer_idle()
+        inner = self.agent.continue_stream()
+
         async def drive(emit):
-            inner = self.agent.continue_stream()
-            async for event in inner:
-                await self._handle_event(event)
-                await emit(event)
-            return await inner.result()
-        return EventStream(drive)
+            try:
+                async for event in inner:
+                    await self._handle_event(event)
+                    await emit(event)
+                return await inner.result()
+            except asyncio.CancelledError:
+                self.agent.abort()
+                await inner.wait()
+                raise
+
+        outer = EventStream(drive, on_cancel=lambda _: self.agent.abort())
+        self._active_outer = outer
+        outer.add_done_callback(
+            lambda completed: self._on_outer_done(completed, inner)
+        )
+        return outer
+
+    def _on_outer_done(self, completed: EventStream[list[AgentMessage]], inner: EventStream[list[AgentMessage]]) -> None:
+        if completed.cancel_requested and not inner.done:
+            self.agent.abort()
+        if self._active_outer is completed:
+            self._active_outer = None
+
+    def _ensure_outer_idle(self) -> None:
+        if self._active_outer is not None and not self._active_outer.done:
+            raise RuntimeError("Agent is already processing. Use steer()/follow_up() or wait_for_idle().")
+
+    def abort(self) -> None:
+        self.agent.abort()
+
+    async def wait_for_idle(self) -> None:
+        await self.agent.wait_for_idle()
+        outer = self._active_outer
+        if outer is not None:
+            await outer.wait()
+
+    @property
+    def is_running(self) -> bool:
+        return self.agent.is_running or (self._active_outer is not None and not self._active_outer.done)
 
     async def run_command(self, input_: str) -> None:
         await self.runner.run_command(input_)
 
     async def _handle_event(self, event: AgentEvent) -> None:
         if event.type == "message_end" and event.message is not None:
-            if self.persist_messages:
-                self.runner.session.append_message(event.message)
-            await self.runner.emit("message_end", MessageEndEvent(event.message))
+            try:
+                if self.persist_messages:
+                    self.runner.session.append_message(event.message)
+                await self.runner.emit("message_end", MessageEndEvent(event.message))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Persistence/lifecycle wiring is infrastructure, unlike an
+                # ordinary extension handler (which ExtensionRunner isolates).
+                self.agent._fail_from_bridge(exc)
         elif event.type == "turn_end" and event.message is not None:
-            await self.runner.emit("turn_end", TurnEndEvent(event.message, list(event.tool_results or [])))
+            try:
+                await self.runner.emit("turn_end", TurnEndEvent(event.message, list(event.tool_results or [])))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.agent._fail_from_bridge(exc)
 
     def close(self) -> None:
+        if self.is_running:
+            self.agent.abort()
         self.agent.config.before_tool_call = self._previous_before
         self.agent.config.transform_context = self._previous_transform
         self.agent.context.tools = list(self._previous_tools)
@@ -59,6 +137,7 @@ class ExtensionHost:
 
 def bind_extensions(agent: Agent, runner: ExtensionRunner, *, persist_messages: bool = True) -> ExtensionHost:
     """Connect Extension registrations to Core seams and return the harness used to run/observe the Agent."""
+
     original_tools = list(agent.context.tools)
     extension_tools = runner.get_registered_tools()
     universe: dict[str, Tool] = {tool.name: tool for tool in [*original_tools, *extension_tools]}
@@ -76,24 +155,34 @@ def bind_extensions(agent: Agent, runner: ExtensionRunner, *, persist_messages: 
     previous_before = agent.config.before_tool_call
     previous_transform = agent.config.transform_context
 
-    async def before_tool_call(call, args, context):
+    async def before_tool_call(call, args, context, cancellation: CancellationToken | None = None):
         if previous_before:
-            decision = previous_before(call, args, context)
-            if inspect.isawaitable(decision):
-                decision = await decision
+            decision = await call_with_optional_cancellation(
+                previous_before,
+                call,
+                args,
+                context,
+                cancellation=cancellation,
+            )
             if decision and decision.block:
                 return decision
-        verdict = await runner.emit_tool_call(ToolCallEvent(tool_call=call, args=args, agent_context=context))
+        verdict = await runner.emit_tool_call(
+            ToolCallEvent(tool_call=call, args=args, agent_context=context),
+            cancellation=cancellation,
+        )
         if verdict and verdict.block:
             return BeforeToolCallDecision(block=True, reason=verdict.reason, terminate=verdict.terminate)
         return None
 
-    async def transform_context(messages):
+    async def transform_context(messages, cancellation: CancellationToken | None = None):
         current = list(messages)
         if previous_transform:
-            value = previous_transform(current)
-            current = await value if inspect.isawaitable(value) else value
-        return await runner.emit_context(list(current))
+            current = await call_with_optional_cancellation(
+                previous_transform,
+                current,
+                cancellation=cancellation,
+            )
+        return await runner.emit_context(list(current), cancellation=cancellation)
 
     agent.config.before_tool_call = before_tool_call
     agent.config.transform_context = transform_context

@@ -63,7 +63,9 @@ def create_bash_tool(cwd: str | Path) -> Tool[BashArgs]:
     workspace = Path(cwd).expanduser().resolve()
 
     async def bash(args: BashArgs, ctx: ToolExecutionContext) -> ToolResult:
-        del ctx
+        # Agent abort combines this cooperative check with actual task
+        # cancellation, so a command is never spawned after cancellation.
+        ctx.cancellation.throw_if_cancelled()
         if args.timeout is not None and (not math.isfinite(args.timeout) or args.timeout <= 0):
             raise ValueError("timeout must be a finite positive number")
 

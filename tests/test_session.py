@@ -19,7 +19,7 @@ async def test_session_branching_and_compaction_are_append_only():
     entry = await compact_session(
         session,
         keep_last_messages=2,
-        summarize=lambda messages: "summary: " + ",".join(m.content for m in messages),
+        summarize=lambda messages: "summary: " + ",".join(m.text for m in messages),
     )
     assert entry is not None
     assert len(session.entries) == before + 1

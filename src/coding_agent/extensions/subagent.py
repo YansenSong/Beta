@@ -42,7 +42,7 @@ def subagent_extension(api: ExtensionAPI) -> None:
             raise RuntimeError("子 agent 没有返回 assistant 消息")
 
         return ToolResult(
-            content=replies[-1].content,
+            content=replies[-1].text,
             details={"child_messages": len(child_session.get_branch())},
         )
 

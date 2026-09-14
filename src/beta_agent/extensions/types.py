@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from ..session import SessionTree
 from ..tools import ToolExecutionContext
-from ..types import AgentContext, Message, ToolCall, ToolResult
+from ..types import AgentContext, AgentMessage, ToolCall, ToolResult
 
 ArgsT = TypeVar("ArgsT", bound=BaseModel)
 ExtensionEventName = Literal["tool_call", "context", "message_end", "turn_end"]
@@ -44,16 +44,16 @@ class ToolCallEvent:
 
 @dataclass(slots=True)
 class ContextEvent:
-    messages: list[Message]
+    messages: list[AgentMessage]
 
 @dataclass(slots=True)
 class MessageEndEvent:
-    message: Message
+    message: AgentMessage
 
 @dataclass(slots=True)
 class TurnEndEvent:
-    message: Message
-    tool_results: list[Message]
+    message: AgentMessage
+    tool_results: list[AgentMessage]
 
 @dataclass(slots=True)
 class ToolCallDecision:

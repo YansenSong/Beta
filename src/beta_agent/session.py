@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from .types import Message, ToolCall, utc_now_iso
+from .messages import AgentMessage, ImageContent, Message, TextContent, ToolCall, utc_now_iso
+
+CURRENT_SESSION_FORMAT_VERSION = 2
 
 
 @dataclass(slots=True)
@@ -42,7 +44,7 @@ class SessionTree:
         self.leaf_id = entry.id
         return entry
 
-    def append_message(self, message: Message) -> SessionEntry:
+    def append_message(self, message: AgentMessage) -> SessionEntry:
         return self._append("message", _message_to_dict(message))
 
     def append_compaction(self, *, summary: str, first_kept_entry_id: str, tokens_before: int) -> SessionEntry:
@@ -72,7 +74,7 @@ class SessionTree:
         path.reverse()
         return path
 
-    def reconstruct_messages(self, from_id: str | None = None) -> list[Message]:
+    def reconstruct_messages(self, from_id: str | None = None) -> list[AgentMessage]:
         branch = self.get_branch(from_id)
         compactions = [entry for entry in branch if entry.type == "compaction"]
         if not compactions:
@@ -88,7 +90,7 @@ class SessionTree:
 
         # 重建工作上下文时才应用摘要；Session 中被摘要覆盖的旧 Entry 仍然保留。
         messages = [
-            Message.system(
+            AgentMessage.system(
                 f"Conversation summary:\n{latest.payload['summary']}",
                 compaction_entry_id=latest.id,
             )
@@ -101,9 +103,32 @@ class SessionTree:
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("w", encoding="utf-8") as handle:
             for entry in self.entries:
-                handle.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
+                handle.write(
+                    json.dumps(
+                        {
+                            "id": entry.id,
+                            "parent_id": entry.parent_id,
+                            "timestamp": entry.timestamp,
+                            "type": entry.type,
+                            "payload": entry.payload,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
             # leaf 是 Session 当前视角，不属于某个历史 Entry，因此单独写入 meta 行。
-            handle.write(json.dumps({"_meta": {"leaf_id": self.leaf_id}}, ensure_ascii=False) + "\n")
+            handle.write(
+                json.dumps(
+                    {
+                        "_meta": {
+                            "leaf_id": self.leaf_id,
+                            "format_version": CURRENT_SESSION_FORMAT_VERSION,
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
 
     @classmethod
     def load_jsonl(cls, path: str | Path) -> "SessionTree":
@@ -113,16 +138,70 @@ class SessionTree:
             for line in handle:
                 data = json.loads(line)
                 if "_meta" in data:
-                    leaf_id = data["_meta"].get("leaf_id")
+                    meta = data["_meta"]
+                    version = meta.get("format_version", 1)
+                    if version > CURRENT_SESSION_FORMAT_VERSION:
+                        raise ValueError(
+                            "Unsupported session format version "
+                            f"{version}; this runtime supports up to {CURRENT_SESSION_FORMAT_VERSION}"
+                        )
+                    leaf_id = meta.get("leaf_id")
                 else:
                     entries.append(SessionEntry(**data))
         return cls(entries, leaf_id)
 
 
-def _message_to_dict(message: Message) -> dict[str, Any]:
+def _content_to_json(message: AgentMessage) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for block in message.content:
+        if isinstance(block, TextContent):
+            blocks.append({"type": "text", "text": block.text})
+        elif isinstance(block, ImageContent):
+            item: dict[str, Any] = {"type": "image"}
+            if block.url is not None:
+                item["url"] = block.url
+            if block.data is not None:
+                item["data"] = block.data
+            if block.media_type is not None:
+                item["media_type"] = block.media_type
+            blocks.append(item)
+        else:  # pragma: no cover - AgentMessage validates known block types.
+            raise TypeError(f"Unsupported content block: {block!r}")
+    return blocks
+
+
+def _content_from_json(value: Any) -> list[TextContent | ImageContent]:
+    if isinstance(value, str):
+        # v1 sessions used a plain content string.
+        return [TextContent(value)]
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"Invalid message content; expected string or list, got {type(value).__name__}")
+    blocks: list[TextContent | ImageContent] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError(f"Invalid message content block: {item!r}")
+        block_type = item.get("type")
+        if block_type == "text":
+            blocks.append(TextContent(str(item.get("text", ""))))
+        elif block_type == "image":
+            blocks.append(
+                ImageContent(
+                    url=item.get("url"),
+                    data=item.get("data"),
+                    media_type=item.get("media_type"),
+                )
+            )
+        else:
+            raise ValueError(f"Unsupported message content block type: {block_type!r}")
+    return blocks
+
+
+def _message_to_dict(message: AgentMessage) -> dict[str, Any]:
     return {
         "role": message.role,
-        "content": message.content,
+        "content": _content_to_json(message),
         "tool_calls": [
             {"id": call.id, "name": call.name, "arguments": call.arguments} for call in message.tool_calls
         ],
@@ -135,10 +214,10 @@ def _message_to_dict(message: Message) -> dict[str, Any]:
     }
 
 
-def _message_from_dict(data: dict[str, Any]) -> Message:
-    return Message(
+def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
+    return AgentMessage(
         role=data["role"],
-        content=data.get("content", ""),
+        content=_content_from_json(data.get("content", "")),
         tool_calls=[ToolCall(**call) for call in data.get("tool_calls", [])],
         tool_call_id=data.get("tool_call_id"),
         name=data.get("name"),

@@ -26,13 +26,15 @@ assistant response
 
 于是一个原本应该局限在模型接入层的差异，会扩散到整个框架。
 
-## 2. Beta 的选择：Runtime 使用自己的 Message
+## 2. Beta 的选择：Runtime 使用自己的 AgentMessage
 
-Beta 在 [`../../src/beta_agent/types.py`](../../src/beta_agent/types.py) 中定义了自己的：
+Beta 在 [`../../src/beta_agent/messages.py`](../../src/beta_agent/messages.py) 中定义了自己的 Runtime 消息：
 
-- `Message`
+- `AgentMessage`
 - `ToolCall`
 - `ToolResult`
+
+`Message` 仍然是 `AgentMessage` 的兼容 alias。消息内容现在以 text/image content blocks 表达，文本读取使用 `message.text`。
 
 Agent Loop 关心的是：
 
@@ -50,7 +52,9 @@ tool 最后返回了什么
 ```text
 Agent Message
      ↓
-ModelAdapter boundary
+`convert_to_llm`
+     ↓
+ProviderMessage boundary
      ↓
 Provider protocol
 ```
@@ -59,11 +63,13 @@ Provider protocol
 
 [`../../src/beta_agent/model.py`](../../src/beta_agent/model.py) 定义 `ModelAdapter` 协议，具体 Provider 实现在 [`../../src/beta_agent/adapters/`](../../src/beta_agent/adapters/) 中。
 
+[`../../src/beta_agent/provider_messages.py`](../../src/beta_agent/provider_messages.py) 的 `default_convert_to_llm()` 负责把 Runtime 消息转换成不含 runtime-only metadata 的 `ProviderMessage`。
+
 目前的 OpenAI-compatible Adapter 负责：
 
-- 把内部 `Message` 转成 Provider messages；
+- 接收 `ProviderMessage`，再转换成 Provider payload；
 - 把 Beta Tool schema 转成 Provider Tool schema；
-- 把流式 Provider 响应重新组装成内部 `Message` / `ToolCall`；
+- 把流式 Provider 响应重新组装成内部 `AgentMessage` / `ToolCall`；
 - 把 Provider 的 stop reason 映射回 Runtime 能理解的状态。
 
 核心原则可以记成一句话：
@@ -80,9 +86,10 @@ Tool Calling 正是这个分界点。
 
 建议依次看：
 
-1. `types.py`：内部 Message 长什么样；
-2. `model.py`：Agent Loop 依赖什么接口；
-3. `adapters/openai_compatible.py`：Provider 差异在哪里结束。
+1. `messages.py`：内部 AgentMessage 和 content blocks 长什么样；
+2. `provider_messages.py`：Runtime 到 Provider 的显式转换边界；
+3. `model.py`：Agent Loop 依赖什么接口；
+4. `adapters/openai_compatible.py`：Provider 差异在哪里结束。
 
 阅读时注意：`Agent` 本身不应该出现大量 Provider 字段名。
 
@@ -91,7 +98,7 @@ Tool Calling 正是这个分界点。
 你应该能回答：
 
 - 为什么直接把 OpenAI Message 当 Session Message 会增加耦合？
-- `Message` 和 Provider Message 为什么不是同一个概念？
+- `AgentMessage` 和 Provider Message 为什么不是同一个概念？
 - 新增 Anthropic Adapter 时，哪些模块原则上不应该修改？
 - Provider 转换为什么适合放在 LLM call boundary？
 

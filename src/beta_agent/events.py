@@ -13,21 +13,98 @@ _SENTINEL = object()
 class EventStream(Generic[T]):
     """Async event iterator with an awaitable final result."""
 
-    def __init__(self, runner: Callable[[Callable[[AgentEvent], Awaitable[None]]], Awaitable[T]]):
+    def __init__(
+        self,
+        runner: Callable[[Callable[[AgentEvent], Awaitable[None]]], Awaitable[T]],
+        *,
+        on_done: Callable[["EventStream[T]"], None] | None = None,
+        on_cancel: Callable[["EventStream[T]"], None] | None = None,
+    ):
         self._queue: asyncio.Queue[AgentEvent | object] = asyncio.Queue()
+        self._closed = False
+        self._started = False
+        self._cancel_requested = False
+        self._on_done = on_done
+        self._on_cancel = on_cancel
         self._task = asyncio.create_task(self._drive(runner))
+        self._task.add_done_callback(self._task_done)
+
+    @property
+    def done(self) -> bool:
+        return self._task.done()
+
+    @property
+    def started(self) -> bool:
+        return self._started
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_requested
+
+    def add_done_callback(self, callback: Callable[["EventStream[T]"], None]) -> None:
+        if self.done:
+            callback(self)
+            return
+        previous = self._on_done
+
+        def chained(stream: "EventStream[T]") -> None:
+            if previous is not None:
+                previous(stream)
+            callback(stream)
+
+        self._on_done = chained
+
+    def add_cancel_callback(self, callback: Callable[["EventStream[T]"], None]) -> None:
+        previous = self._on_cancel
+
+        def chained(stream: "EventStream[T]") -> None:
+            if previous is not None:
+                previous(stream)
+            callback(stream)
+
+        self._on_cancel = chained
+
+    def cancel(self) -> None:
+        if self._cancel_requested:
+            return
+        self._cancel_requested = True
+        if self._on_cancel is not None:
+            self._on_cancel(self)
+        # A task cancelled before its first scheduling turn never enters the
+        # coroutine body.  Let it start in that edge case so Agent's token can
+        # produce a domain-level aborted lifecycle instead of a hanging stream.
+        # A generic EventStream without an on_cancel coordinator can be safely
+        # cancelled immediately; Agent/Host streams use the coordinator to let
+        # their domain layer finalize an aborted lifecycle first.
+        if not self._task.done() and (self._started or self._on_cancel is None):
+            self._task.cancel()
+
+    def _close_queue(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._queue.put_nowait(_SENTINEL)
+
+    def _task_done(self, _task: asyncio.Task[T]) -> None:
+        self._close_queue()
+        if self._on_done is not None:
+            self._on_done(self)
 
     async def _drive(
         self,
         runner: Callable[[Callable[[AgentEvent], Awaitable[None]]], Awaitable[T]],
     ) -> T:
+        self._started = True
         async def emit(event: AgentEvent) -> None:
             await self._queue.put(event)
+            # Give wrapper layers (for example ExtensionHost) a chance to
+            # observe each event and cancel the producer before it continues
+            # through the rest of a lifecycle in the same event-loop turn.
+            await asyncio.sleep(0)
 
         try:
             return await runner(emit)
         finally:
-            await self._queue.put(_SENTINEL)
+            self._close_queue()
 
     def __aiter__(self) -> AsyncIterator[AgentEvent]:
         return self
@@ -41,3 +118,11 @@ class EventStream(Generic[T]):
 
     async def result(self) -> T:
         return await self._task
+
+    async def wait(self) -> None:
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            # EventStream is generic; it does not infer Agent domain status.
+            # Agent itself catches cancellation and normally returns a result.
+            pass

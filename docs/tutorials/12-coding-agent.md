@@ -26,7 +26,7 @@ Core 不反向依赖 Coding Agent 产品层。
 `coding_agent` 提供：
 
 - `create_coding_agent()`：按 workspace、Tool、Skill、Session、Extension、Prompt 的顺序完成装配；
-- `CodingAgentRuntime`：暴露 `stream()`、`run()`、`run_command()`、`save_session()` 和 `close()`；
+- `CodingAgentRuntime`：暴露 `stream()`、`run()`、`run_command()`、`save_session()`、`abort()`、`wait_for_idle()`、`is_running` 和 `close()`；
 - `create_coding_tools()`：创建稳定的 `read_file`、`write_file`、`edit`、`grep`、`bash` 集合；
 - `build_coding_system_prompt()`：从实际 Tool 和 Skill metadata 生成产品提示；
 - `coding_agent.extensions`：正式产品级 Permission Gate、Plan Mode 与 Subagent。

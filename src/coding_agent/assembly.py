@@ -62,6 +62,16 @@ class CodingAgentRuntime:
     def continue_stream(self):
         return self.host.continue_stream()
 
+    def abort(self) -> None:
+        self.host.abort()
+
+    async def wait_for_idle(self) -> None:
+        await self.host.wait_for_idle()
+
+    @property
+    def is_running(self) -> bool:
+        return self.host.is_running
+
     async def run_command(self, command: str) -> None:
         await self.host.run_command(command)
 
