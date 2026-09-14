@@ -22,7 +22,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/beta_agent"]
+packages = ["src/beta_agent", "src/coding_agent"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

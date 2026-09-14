@@ -35,7 +35,7 @@ Chapter 12 已实现 Coding Agent Assembly 产品层。
 
 | 文档 | 解决的问题 | 主要对应源码 |
 | --- | --- | --- |
-| `ARCHITECTURE.md` | 系统边界和稳定 invariant 是什么 | `src/beta_agent/` 全局 |
+| `ARCHITECTURE.md` | 系统边界和稳定 invariant 是什么 | `src/beta_agent/` Core + `src/coding_agent/` 产品层 |
 | `FRAMEWORK.md` | 当前框架各模块如何协作 | `agent.py`、`tools.py`、`session.py`、`extensions/` |
 | `EXTENSIONS.md` | 如何编写、加载和组合 Extension | `src/beta_agent/extensions/`、`examples/extensions/` |
 | `tutorials/00～12` | 为什么框架一步步长成现在这样 | 每章对应的源码和测试 |
@@ -47,11 +47,11 @@ Beta 现在可以粗略看成四层：
 ```text
 Application / Harness
 ├── CLI / UI
-├── Coding Agent Assembly
+├── coding_agent（Coding Agent 产品包）
 ├── Session / Compaction / Skills
 └── ExtensionHost / ExtensionRunner
         ↓
-Agent Core
+Agent Core（beta_agent）
 ├── Agent Loop
 ├── EventStream
 └── ToolRuntime
@@ -60,6 +60,12 @@ Provider Boundary
 └── ModelAdapter
         ↓
 External Model API
+```
+
+包级依赖保持为：
+
+```text
+coding_agent -> beta_agent
 ```
 
 最重要的设计原则仍然是：**新能力优先复用已有 seam，而不是继续往 Agent Loop 里增加产品级分支。**
@@ -79,7 +85,7 @@ Subagent
 
 因此 `permission_mode`、`plan_mode`、`subagent_branch` 都没有进入 Agent Core。
 
-Coding Agent 通过 [`beta_agent.coding`](../src/beta_agent/coding/) 组装五个产品 Tool、workspace prompt、Skill metadata、Session/Compaction 和 ExtensionHost。`cwd` 只是路径解析基点，不是 sandbox；示例 Permission Gate 也不是完整命令安全系统。
+Coding Agent 通过 [`coding_agent`](../src/coding_agent/) 组装五个产品 Tool、workspace prompt、Skill metadata、Session/Compaction 和 ExtensionHost。`cwd` 只是路径解析基点，不是 sandbox；示例 Permission Gate 也不是完整命令安全系统。
 
 ## 运行与验证
 

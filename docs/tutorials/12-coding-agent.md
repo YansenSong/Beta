@@ -15,7 +15,15 @@ Model Adapter
 
 ## 1. 产品层入口
 
-产品层位于 [`../../src/beta_agent/coding/`](../../src/beta_agent/coding/)：
+产品层现在是独立 Python 包，位于 [`../../src/coding_agent/`](../../src/coding_agent/)；通用框架仍位于 `src/beta_agent/`。依赖方向固定为：
+
+```text
+coding_agent -> beta_agent
+```
+
+Core 不反向依赖 Coding Agent 产品层。
+
+`coding_agent` 提供：
 
 - `create_coding_agent()`：按 workspace、Tool、Skill、Session、Extension、Prompt 的顺序完成装配；
 - `CodingAgentRuntime`：暴露 `stream()`、`run()`、`run_command()`、`save_session()` 和 `close()`；
@@ -25,7 +33,7 @@ Model Adapter
 正常运行应该经过 facade：
 
 ```python
-from beta_agent.coding import CodingAgentOptions, create_coding_agent
+from coding_agent import CodingAgentOptions, create_coding_agent
 
 runtime = await create_coding_agent(
     CodingAgentOptions(cwd=".", model=model, session_file=".beta/session.jsonl")
@@ -79,7 +87,7 @@ Agent(initial_messages=...)
 
 ## 5. 权限边界
 
-`src/beta_agent/coding/extensions/permission_gate.py` 中的 Permission Gate 只是一个演示 Extension。它在 `before_tool_call` seam 拦截示例危险命令（如 `rm -rf`、`sudo`、危险的 `chmod/chown 777`），不属于 `bash` Tool 实现。
+`src/coding_agent/extensions/permission_gate.py` 中的 Permission Gate 只是一个演示 Extension。它在 `before_tool_call` seam 拦截示例危险命令（如 `rm -rf`、`sudo`、危险的 `chmod/chown 777`），不属于 `bash` Tool 实现。
 
 两个边界必须区分：
 
@@ -88,7 +96,11 @@ Agent(initial_messages=...)
 
 Plan Mode 的 mutation tool 集合也同步包含 `write_file`，但 Plan Mode 仍然是 Extension，不进入 Coding Tool 或 Agent Core。
 
-## 6. 离线验证
+## 6. 为什么移除 `builtin_tools.py`
+
+早期 Core 中的 `make_read_text_file_tool()` 只是一个受 root containment 限制的演示读取工具。Chapter 12 已经提供产品级 `read_file`，两者语义不同且前者没有实际调用方，因此 Core 不再携带该遗留 Tool。需要读取 workspace 文件时应由具体产品选择自己的 Tool，而不是把文件系统能力硬编码成 Agent Core 的 builtin。
+
+## 7. 离线验证
 
 `tests/test_coding_tools.py` 覆盖各工具边界，`tests/test_coding_assembly.py` 覆盖装配、恢复、无重复持久化和 compaction，`tests/test_coding_e2e.py` 使用 `ScriptedModelAdapter` 真实完成：
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from ...extensions import ExtensionAPI, ToolCallDecision
+from beta_agent.extensions import ExtensionAPI, ToolCallDecision
 
 _DANGEROUS_PATTERNS = (
     re.compile(r"\brm\s+(?:-[A-Za-z]*r[A-Za-z]*|--recursive\b)", re.I),

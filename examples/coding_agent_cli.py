@@ -12,8 +12,8 @@ from typing import Any
 from dotenv import load_dotenv
 
 from beta_agent.adapters import OpenAICompatibleAdapter
-from beta_agent.coding import CodingAgentOptions, create_coding_agent
-from beta_agent.coding.extensions import permission_gate_extension
+from coding_agent import CodingAgentOptions, create_coding_agent
+from coding_agent.extensions import permission_gate_extension
 
 
 def _arguments() -> argparse.Namespace:

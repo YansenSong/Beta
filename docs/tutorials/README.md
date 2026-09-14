@@ -17,10 +17,10 @@
 | [06](06-context-transform.md) | Runtime History 与 LLM Context | `agent.py` |
 | [07](07-session-tree.md) | 可分支 Session Tree | `session.py` |
 | [08](08-context-compaction.md) | Append-only Compaction | `compaction.py`、`session.py` |
-| [09](09-skills.md) | Skill Catalog 与按需加载 | `skills.py`、`builtin_tools.py` |
+| [09](09-skills.md) | Skill Catalog 与按需加载 | `skills.py` + 产品层普通读取 Tool |
 | [10](10-extension-runtime.md) | Extension API、Runner、Loader、Bridge | `extensions/` |
 | [11](11-extension-composition.md) | Permission、Plan Mode、Subagent 组合 | `examples/extensions/` |
-| [12](12-coding-agent.md) | Coding Agent 产品层组装 | `coding/`、`examples/coding_agent_cli.py` |
+| [12](12-coding-agent.md) | Coding Agent 产品层组装 | `src/coding_agent/`、`examples/coding_agent_cli.py` |
 
 ## 怎么读
 

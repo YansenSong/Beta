@@ -8,8 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...tools import Tool, ToolExecutionContext
-from ...types import ToolResult
+from beta_agent.tools import Tool, ToolExecutionContext
+from beta_agent.types import ToolResult
 from .path_utils import resolve_tool_path
 
 

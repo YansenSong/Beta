@@ -5,13 +5,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..agent import Agent
-from ..compaction import Summarizer, compact_session
-from ..extensions import ExtensionFactory, ExtensionHost, ExtensionRunner, RuntimeConfig, bind_extensions
-from ..model import ModelAdapter
-from ..session import SessionTree
-from ..skills import Skill, SkillCatalog
-from ..tools import Tool
+from beta_agent.agent import Agent
+from beta_agent.compaction import Summarizer, compact_session
+from beta_agent.extensions import ExtensionFactory, ExtensionHost, ExtensionRunner, RuntimeConfig, bind_extensions
+from beta_agent.model import ModelAdapter
+from beta_agent.session import SessionTree
+from beta_agent.skills import Skill, SkillCatalog
+from beta_agent.tools import Tool
 from .prompt import build_coding_system_prompt
 from .tools import create_coding_tools
 

@@ -1,8 +1,9 @@
 from pathlib import Path
 from typing import Any
 
+from beta_agent.tools import Tool
+
 from .bash import BASH_MAX_BYTES, BashArgs, create_bash_tool
-from ...tools import Tool
 from .edit import EditArgs, EditItem, create_edit_tool, normalize_edit_arguments, prepare_edit_arguments
 from .grep import GrepArgs, SKIP_DIRECTORIES, create_grep_tool
 from .path_utils import resolve_tool_path

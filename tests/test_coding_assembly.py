@@ -6,12 +6,12 @@ import pytest
 from pydantic import BaseModel
 
 from beta_agent import Message, ScriptedModelAdapter, Tool, ToolResult
-from beta_agent.coding import (
+from beta_agent.extensions import ExtensionTool
+from coding_agent import (
     CodingAgentOptions,
     CodingCompactionOptions,
     create_coding_agent,
 )
-from beta_agent.extensions import ExtensionTool
 
 
 class NoArgs(BaseModel):

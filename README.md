@@ -17,7 +17,7 @@
 - Append-only 的 **SessionTree**，支持分支和 JSONL 持久化；
 - Branch-local 的 **CompactionEntry**，压缩 Context 但不删除原始历史；
 - **SkillCatalog**，只向 system prompt 注入 Skill metadata，正文按需通过普通 Tool 读取。
-- **Coding Agent 产品层**，组装 workspace、`read_file` / `write_file` / `edit` / `grep` / `bash`、Skills、Extensions、Session 和可选 Compaction。
+- 独立的 **Coding Agent 产品包** `coding_agent`，组装 workspace、`read_file` / `write_file` / `edit` / `grep` / `bash`、Skills、Extensions、Session 和可选 Compaction。
 
 ## 安装
 
@@ -61,8 +61,6 @@ async def main():
 
 asyncio.run(main())
 ```
-
-可运行示例见 [`examples/basic.py`](examples/basic.py)。
 
 ## 文档
 
@@ -117,9 +115,21 @@ description: 排查数据库连接、慢查询与锁等待问题
 
 当模型判断某个 Skill 与当前任务相关时，可以通过普通的文件读取 Tool 去读取对应 `SKILL.md`。这样既能保持 system prompt 精简，也能复用已有 Tool Runtime，而不需要给 Agent Loop 增加特殊的 `loadSkill()` 或 `executeSkill()` 逻辑。
 
+## 包边界
+
+`beta_agent` 是通用 Agent Framework：Agent Loop、Model Adapter、Tool Runtime、Session、Compaction、Skills 与 Extension Runtime 都在这里。
+
+`coding_agent` 是建立在 `beta_agent` 之上的产品层：Coding Tools、Coding Prompt、Coding Agent assembly 和产品级 extensions 都在独立包中。依赖方向保持为：
+
+```text
+coding_agent -> beta_agent
+```
+
+Core 不依赖 Coding Agent 产品层。
+
 ## 当前范围
 
-当前 Core 与产品层覆盖教程第 00～12 章；Coding Agent 位于 `beta_agent.coding`，不改变 Core 的 Agent Loop 和 Tool Runtime。
+当前 Core 与产品层覆盖教程第 00～12 章；Coding Agent 位于独立的 `coding_agent` 包，不改变 Core 的 Agent Loop 和 Tool Runtime。
 
 Coding Agent 的 `cwd` 只是路径解析基点，不是 sandbox；示例 Permission Gate 只是策略演示，不是完整命令安全系统。复杂 Provider 特性、Telemetry、Sandbox、MCP、更完整的持久化后端等仍不属于 Core 的职责。
 

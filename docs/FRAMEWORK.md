@@ -19,7 +19,7 @@ Extension Composition
 Coding Agent Assembly
 ```
 
-Chapter 12 已把 read / write / edit / grep / bash、Workspace 与前面这些 Runtime primitive 组装成 `beta_agent.coding` 产品层。
+Chapter 12 已把 read / write / edit / grep / bash、Workspace 与前面这些 Runtime primitive 组装成独立的 `coding_agent` 产品包；通用 Runtime 仍留在 `beta_agent`。
 
 ---
 
@@ -80,27 +80,28 @@ Beta/
 │       └── subagent.py
 ├── skills/
 │   └── example/SKILL.md
-├── src/beta_agent/
-│   ├── __init__.py
-│   ├── agent.py
-│   ├── types.py
-│   ├── events.py
-│   ├── model.py
-│   ├── tools.py
-│   ├── builtin_tools.py
-│   ├── session.py
-│   ├── compaction.py
-│   ├── skills.py
-│   ├── adapters/
-│   │   └── openai_compatible.py
-│   ├── extensions/
+├── src/
+│   ├── beta_agent/
 │   │   ├── __init__.py
+│   │   ├── agent.py
 │   │   ├── types.py
-│   │   ├── runner.py
-│   │   ├── wrapper.py
-│   │   ├── loader.py
-│   │   └── bridge.py
-│   └── coding/
+│   │   ├── events.py
+│   │   ├── model.py
+│   │   ├── tools.py
+│   │   ├── session.py
+│   │   ├── compaction.py
+│   │   ├── skills.py
+│   │   ├── adapters/
+│   │   │   └── openai_compatible.py
+│   │   └── extensions/
+│   │       ├── __init__.py
+│   │       ├── types.py
+│   │       ├── runner.py
+│   │       ├── wrapper.py
+│   │       ├── loader.py
+│   │       └── bridge.py
+│   └── coding_agent/
+│       ├── __init__.py
 │       ├── assembly.py
 │       ├── prompt.py
 │       ├── extensions/
@@ -111,18 +112,29 @@ Beta/
     ├── test_session.py
     ├── test_skills.py
     ├── test_extension_runtime.py
-    └── test_extension_composition.py
+    ├── test_extension_composition.py
+    ├── test_coding_tools.py
+    ├── test_coding_assembly.py
+    └── test_coding_e2e.py
 ```
+
+包级依赖保持为：
+
+```text
+coding_agent -> beta_agent
+```
+
+`beta_agent` 不反向依赖 `coding_agent`。
 
 整个系统可以粗略看成：
 
 ```text
 Application / Harness
-├── CLI
+├── coding_agent / CLI
 ├── Session / Compaction / Skills
 └── ExtensionHost / ExtensionRunner
         ↓
-Agent Core
+Agent Core（beta_agent）
 ├── Agent Loop
 ├── EventStream
 └── ToolRuntime
@@ -297,6 +309,7 @@ permission gate
 plan mode
 subagent
 extension directory
+coding workflow
 ```
 
 这些都在更外层组合。
@@ -563,9 +576,9 @@ location
 
 正文仍留在 `SKILL.md` 文件里。
 
-模型真正判断 Skill 相关时，再通过普通读取 Tool 加载正文。
+模型真正判断 Skill 相关时，再通过产品提供的普通读取 Tool 加载正文。
 
-所以大量 Skill 不会一次性污染 system prompt。
+所以大量 Skill 不会一次性污染 system prompt。Core 只负责 Skill metadata，不内置文件系统读取 Tool。
 
 ---
 
@@ -836,21 +849,21 @@ Child history 不直接进入 Parent history。
 
 | Chapter | 主题 | Beta 主要落点 |
 | --- | --- | --- |
-| 00 | Model Boundary | `types.py`、`model.py`、`adapters/` |
-| 01 | Tool-driven Loop | `agent.py`、`tools.py` |
-| 02 | Agent Runtime / Events | `events.py`、`agent.py` |
-| 03 | Tool Runtime | `tools.py` |
-| 04 | Parallel Tools | `tools.py` |
-| 05 | Steering / Follow-up | `agent.py` |
-| 06 | Context Transform | `agent.py` |
-| 07 | Session Tree | `session.py` |
-| 08 | Context Compaction | `compaction.py`、`session.py` |
-| 09 | Skills | `skills.py`、`builtin_tools.py` |
-| 10 | Extension Runtime | `extensions/` |
+| 00 | Model Boundary | `src/beta_agent/types.py`、`model.py`、`adapters/` |
+| 01 | Tool-driven Loop | `src/beta_agent/agent.py`、`tools.py` |
+| 02 | Agent Runtime / Events | `src/beta_agent/events.py`、`agent.py` |
+| 03 | Tool Runtime | `src/beta_agent/tools.py` |
+| 04 | Parallel Tools | `src/beta_agent/tools.py` |
+| 05 | Steering / Follow-up | `src/beta_agent/agent.py` |
+| 06 | Context Transform | `src/beta_agent/agent.py` |
+| 07 | Session Tree | `src/beta_agent/session.py` |
+| 08 | Context Compaction | `src/beta_agent/compaction.py`、`session.py` |
+| 09 | Skills | `src/beta_agent/skills.py` + 产品层读取 Tool |
+| 10 | Extension Runtime | `src/beta_agent/extensions/` |
 | 11 | Extension Composition | `examples/extensions/`、extension tests |
-| 12 | Coding Agent Assembly | `coding/`、`examples/coding_agent_cli.py`、coding tests |
+| 12 | Coding Agent Assembly | `src/coding_agent/`、`examples/coding_agent_cli.py`、coding tests |
 
-Beta 已经不再保持“每章一套独立 demo Runtime”，而是把这些能力合并进同一个 Python package。
+Beta 已经不再保持“每章一套独立 demo Runtime”，而是在稳定 Core 上叠加独立产品包。
 
 ---
 
@@ -896,7 +909,7 @@ examples/extensions/subagent.py
 python examples/coding_agent_cli.py --cwd . --session .beta/session.jsonl
 ```
 
-CLI 只负责读取配置、显示事件和调用 `CodingAgentRuntime`；workspace、五个 Coding Tool、Skill metadata、Session 与 Extension 的装配都位于 `beta_agent.coding`。
+CLI 只负责读取配置、显示事件和调用 `CodingAgentRuntime`；workspace、五个 Coding Tool、Skill metadata、Session 与 Extension 的装配都位于独立的 `coding_agent` 包。
 
 ---
 
@@ -910,11 +923,13 @@ src/beta_agent/adapters/
 
 不要让 Agent Loop 认识 Provider JSON。
 
-### 新普通 Tool
+### 新普通 Core Tool abstraction
 
 ```text
 Tool + Pydantic args_model + handler
 ```
+
+具体文件系统、shell 等产品 Tool 应优先放在产品包，而不是默认塞进 Core。
 
 ### 外部可插拔 Tool
 
@@ -1004,20 +1019,21 @@ Chapter 12 已实现基础 Coding Agent，但仍然主动不做：
 如果要继续维护 Beta，推荐按下面顺序读：
 
 ```text
-1. types.py
-2. model.py
-3. events.py
-4. tools.py
-5. agent.py
-6. session.py
-7. compaction.py
-8. skills.py
-9. extensions/types.py
-10. extensions/runner.py
-11. extensions/wrapper.py
-12. extensions/bridge.py
-13. examples/extensions/
-14. tests/
+1. beta_agent/types.py
+2. beta_agent/model.py
+3. beta_agent/events.py
+4. beta_agent/tools.py
+5. beta_agent/agent.py
+6. beta_agent/session.py
+7. beta_agent/compaction.py
+8. beta_agent/skills.py
+9. beta_agent/extensions/types.py
+10. beta_agent/extensions/runner.py
+11. beta_agent/extensions/wrapper.py
+12. beta_agent/extensions/bridge.py
+13. coding_agent/assembly.py
+14. coding_agent/tools/
+15. tests/
 ```
 
 其中最值得反复理解的是：
@@ -1034,6 +1050,9 @@ session.py
 
 extensions/runner.py + bridge.py
 → 产品行为如何进入已有 seam 而不污染 Core
+
+coding_agent/
+→ 产品如何只依赖 Core primitive 完成组装
 ```
 
-读完这四组以后，可以继续阅读 `tutorials/12-coding-agent.md`，理解如何把已有 primitive 组装成 Coding Agent。
+读完这些以后，可以继续阅读 `tutorials/12-coding-agent.md`，理解如何把已有 primitive 组装成 Coding Agent。

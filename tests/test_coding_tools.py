@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from beta_agent import AgentContext, Message, ToolCall, ToolExecutionContext, ToolRuntime
-from beta_agent.coding.tools import (
+from coding_agent.tools import (
     BASH_MAX_BYTES,
     READ_MAX_BYTES,
     READ_MAX_LINES,
@@ -85,7 +85,7 @@ async def test_read_file_truncates_lines_and_utf8_bytes(tmp_path: Path):
     large.write_text("你好" * (READ_MAX_BYTES // 3), encoding="utf-8")
     result = await _execute_direct(tool, ReadFileArgs(path="large.txt"))
     assert result.details["truncation"]["truncated"] is True
-    assert result.content.encode("utf-8")  # the hint remains valid UTF-8
+    assert result.content.encode("utf-8")
     assert "offset=1" in result.content
 
 

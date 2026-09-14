@@ -1,5 +1,4 @@
 from .agent import Agent, AgentConfig
-from .builtin_tools import make_read_text_file_tool
 from .compaction import compact_session
 from .events import EventStream
 from .model import ModelAdapter, ScriptedModelAdapter
@@ -37,5 +36,4 @@ __all__ = [
     "ToolRuntime",
     "TurnResult",
     "compact_session",
-    "make_read_text_file_tool",
 ]

@@ -6,11 +6,12 @@ Beta 的目标不是把所有 Agent 功能都塞进一个 Runtime，而是把稳
 
 ```text
 Application / Harness
+├── coding_agent（Coding Agent 产品包）
 ├── CLI / UI
 ├── Session / Compaction / Skills
 └── ExtensionHost / ExtensionRunner
         ↓
-Agent Core
+Agent Core（beta_agent）
 ├── Agent Loop
 ├── EventStream
 └── ToolRuntime
@@ -20,6 +21,8 @@ Provider Boundary
         ↓
 External Model API
 ```
+
+包级依赖保持单向：`coding_agent -> beta_agent`。Core 不反向依赖 Coding Agent 产品层。
 
 核心原则是：**产品行为优先通过已有 seam 组合，而不是不断给 `Agent._run()` 增加分支。**
 
@@ -205,6 +208,19 @@ wrapper.py  ExtensionTool → Core Tool
 loader.py   Python module loading
 bridge.py   ExtensionRunner ↔ Agent Core wiring
 ```
+
+### `src/coding_agent/`
+
+这是独立产品包，不属于 `beta_agent` Core。它负责：
+
+```text
+Coding Agent assembly
+Coding prompt
+read_file / write_file / edit / grep / bash
+产品级 extension（如 permission gate）
+```
+
+它可以依赖 `beta_agent` 的 Agent、ToolRuntime、Session、Skills、Compaction 和 Extension Runtime；反向依赖不允许出现。
 
 ---
 
@@ -548,6 +564,8 @@ context handler 顺序组成 pipeline
 Extension Tool 仍走 Core ToolRuntime
 active tools 对下一次 Model call 立即生效
 Parent / Child Agent history 保持隔离
+
+coding_agent 只依赖 beta_agent，Core 不反向依赖产品包
 ```
 
 测试是这些 invariant 的最终约束。
@@ -556,7 +574,7 @@ Parent / Child Agent history 保持隔离
 
 ## 14. Chapter 12：Coding Agent 产品层
 
-当前 00～11 已经把 Runtime primitive 和 Extension composition 打通，Chapter 12 在 `beta_agent.coding` 中解决产品组装问题：
+当前 00～11 已经把 Runtime primitive 和 Extension composition 打通，Chapter 12 在独立的 `coding_agent` 包中解决产品组装问题：
 
 ```text
 read

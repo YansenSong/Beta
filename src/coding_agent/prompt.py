@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from ..skills import SkillCatalog
-from ..tools import Tool
+from beta_agent.skills import SkillCatalog
+from beta_agent.tools import Tool
 
 
 def build_coding_system_prompt(

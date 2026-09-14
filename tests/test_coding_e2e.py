@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from beta_agent import Message, ScriptedModelAdapter, ToolCall
-from beta_agent.coding import CodingAgentOptions, create_coding_agent
-from beta_agent.coding.extensions import permission_gate_extension
+from coding_agent import CodingAgentOptions, create_coding_agent
+from coding_agent.extensions import permission_gate_extension
 
 FIXTURE = Path(__file__).parent / "fixtures" / "coding_project"
 
