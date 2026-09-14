@@ -2,7 +2,7 @@
 
 Beta 的目标不是把所有 Agent 功能都塞进一个 Runtime，而是把稳定控制流和容易变化的策略分开。
 
-截至 Chapter 11，项目已经形成四个主要层次：
+截至 Chapter 12，项目已经形成四个主要层次，并在 Application / Harness 层提供 Coding Agent 产品组装：
 
 ```text
 Application / Harness
@@ -554,11 +554,9 @@ Parent / Child Agent history 保持隔离
 
 ---
 
-## 14. 下一阶段：Chapter 12
+## 14. Chapter 12：Coding Agent 产品层
 
-当前 00～11 已经把 Runtime primitive 和 Extension composition 打通。
-
-Chapter 12 应主要解决组装问题：
+当前 00～11 已经把 Runtime primitive 和 Extension composition 打通，Chapter 12 在 `beta_agent.coding` 中解决产品组装问题：
 
 ```text
 read
@@ -575,4 +573,6 @@ Extensions
 
 真正组合成 Coding Agent。
 
-原则仍然不变：如果 Chapter 12 迫使 `Agent._run()` 开始认识 `workspace`、`plan mode`、`permission`、`subagent` 等产品概念，应先检查是不是已有 seam 设计不足，而不是直接继续扩大 Core。
+产品层通过 `CodingAgentRuntime` facade 统一走 `ExtensionHost`，所以 message persistence 和 Extension observe 不会因调用方直接拿到 `Agent` 而丢失。`save_session()` 不会再次 append `agent.messages`。
+
+Coding Tool 仍是普通 `Tool`：`read_file` / `grep` 可并行，`write_file` / `edit` / `bash` 串行。`cwd` 只负责路径解析，不提供 sandbox；示例 Permission Gate 只是 `before_tool_call` 策略，不是完整安全系统。

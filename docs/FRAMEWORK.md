@@ -1,8 +1,8 @@
 # Beta Agent 当前框架说明
 
-本文档介绍 `Beta` 当前 `main` 分支已经实现的 Python Agent Framework。
+本文档介绍 `Beta` 当前 `main` 分支已经实现的 Python Agent Framework，以及 Chapter 12 的 Coding Agent 产品层。
 
-它参考 Pi Agent 的架构思想和 `learn-pi-agent` Chapter 00～11 的递进过程，但不是 TypeScript 源码的逐行翻译。Beta 更关注这些稳定边界：
+它参考 Pi Agent 的架构思想和 `learn-pi-agent` Chapter 00～12 的递进过程，但不是 TypeScript 源码的逐行翻译。Beta 更关注这些稳定边界：
 
 ```text
 Model Boundary
@@ -16,9 +16,10 @@ Compaction
 Skills
 Extension Runtime
 Extension Composition
+Coding Agent Assembly
 ```
 
-当前阶段仍然不是“完整 Coding Agent”。Chapter 12 才会把 read / write / edit / grep / bash、Workspace 与前面这些 Runtime primitive 真正组装起来。
+Chapter 12 已把 read / write / edit / grep / bash、Workspace 与前面这些 Runtime primitive 组装成 `beta_agent.coding` 产品层。
 
 ---
 
@@ -51,7 +52,7 @@ Tool Call?
 - Permission / Plan Mode / Subagent 这类行为是否需要修改 Agent Core；
 - 外部 Python 模块怎样安全地注册 Tool、Command、Handler。
 
-Beta 当前 00～11 的代码就是围绕这些问题形成的。
+Beta 当前 00～12 的代码就是围绕这些问题形成的。
 
 ---
 
@@ -68,9 +69,11 @@ Beta/
 │       ├── 00-model-boundary.md
 │       ├── ...
 │       ├── 10-extension-runtime.md
-│       └── 11-extension-composition.md
+│       ├── 11-extension-composition.md
+│       └── 12-coding-agent.md
 ├── examples/
 │   ├── deepseek_cli.py
+│   ├── coding_agent_cli.py
 │   └── extensions/
 │       ├── permission_gate.py
 │       ├── plan_mode.py
@@ -90,13 +93,18 @@ Beta/
 │   ├── skills.py
 │   ├── adapters/
 │   │   └── openai_compatible.py
-│   └── extensions/
-│       ├── __init__.py
-│       ├── types.py
-│       ├── runner.py
-│       ├── wrapper.py
-│       ├── loader.py
-│       └── bridge.py
+│   ├── extensions/
+│   │   ├── __init__.py
+│   │   ├── types.py
+│   │   ├── runner.py
+│   │   ├── wrapper.py
+│   │   ├── loader.py
+│   │   └── bridge.py
+│   └── coding/
+│       ├── assembly.py
+│       ├── prompt.py
+│       ├── extensions/
+│       └── tools/
 └── tests/
     ├── test_agent_loop.py
     ├── test_parallel_tools.py
@@ -824,7 +832,7 @@ Child history 不直接进入 Parent history。
 
 ---
 
-## 20. 教程 00～11 与源码对应
+## 20. 教程 00～12 与源码对应
 
 | Chapter | 主题 | Beta 主要落点 |
 | --- | --- | --- |
@@ -840,6 +848,7 @@ Child history 不直接进入 Parent history。
 | 09 | Skills | `skills.py`、`builtin_tools.py` |
 | 10 | Extension Runtime | `extensions/` |
 | 11 | Extension Composition | `examples/extensions/`、extension tests |
+| 12 | Coding Agent Assembly | `coding/`、`examples/coding_agent_cli.py`、coding tests |
 
 Beta 已经不再保持“每章一套独立 demo Runtime”，而是把这些能力合并进同一个 Python package。
 
@@ -880,6 +889,14 @@ examples/extensions/subagent.py
 ```
 
 它们主要用于展示 Chapter 11 的组合方式，不是一个完整的终端产品入口。
+
+### Coding Agent CLI
+
+```bash
+python examples/coding_agent_cli.py --cwd . --session .beta/session.jsonl
+```
+
+CLI 只负责读取配置、显示事件和调用 `CodingAgentRuntime`；workspace、五个 Coding Tool、Skill metadata、Session 与 Extension 的装配都位于 `beta_agent.coding`。
 
 ---
 
@@ -962,11 +979,10 @@ pi.register_command()
 
 ## 23. 当前有意没有实现的内容
 
-已经实现 Extension Runtime 以后，当前仍然主动不做：
+Chapter 12 已实现基础 Coding Agent，但仍然主动不做：
 
-- Chapter 12 完整 Coding Agent Assembly；
-- read / write / edit / grep / bash 完整生产级工具集；
-- Workspace 抽象；
+- read / write / edit / grep / bash 的完整生产级增强；
+- OS sandbox、完整 trust model 与命令确认 UI；
 - MCP；
 - sandbox / 容器隔离；
 - permission popup / TUI；
@@ -1020,4 +1036,4 @@ extensions/runner.py + bridge.py
 → 产品行为如何进入已有 seam 而不污染 Core
 ```
 
-读完这四组以后，就具备进入 Chapter 12 Coding Agent Assembly 的基础。
+读完这四组以后，可以继续阅读 `tutorials/12-coding-agent.md`，理解如何把已有 primitive 组装成 Coding Agent。

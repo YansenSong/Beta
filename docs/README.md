@@ -7,7 +7,7 @@
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md)：先看系统边界、数据流和几个必须保持稳定的不变量；
 2. [`FRAMEWORK.md`](FRAMEWORK.md)：再看每个模块为什么存在、彼此如何协作；
 3. [`EXTENSIONS.md`](EXTENSIONS.md)：理解 Chapter 10～11 新加入的 Extension Runtime，以及如何写 Extension；
-4. [`tutorials/`](tutorials/)：按 Chapter 00～11 的顺序重新走一遍框架演进过程。
+4. [`tutorials/`](tutorials/)：按 Chapter 00～12 的顺序重新走一遍框架演进过程。
 
 ## 当前文档覆盖范围
 
@@ -26,9 +26,10 @@
 09  Skills
 10  Extension Runtime
 11  Extension Composition
+12  Coding Agent Assembly
 ```
 
-下一阶段才进入 Chapter 12：Coding Agent Assembly。
+Chapter 12 已实现 Coding Agent Assembly 产品层。
 
 ## 文档与代码的关系
 
@@ -37,7 +38,7 @@
 | `ARCHITECTURE.md` | 系统边界和稳定 invariant 是什么 | `src/beta_agent/` 全局 |
 | `FRAMEWORK.md` | 当前框架各模块如何协作 | `agent.py`、`tools.py`、`session.py`、`extensions/` |
 | `EXTENSIONS.md` | 如何编写、加载和组合 Extension | `src/beta_agent/extensions/`、`examples/extensions/` |
-| `tutorials/00～11` | 为什么框架一步步长成现在这样 | 每章对应的源码和测试 |
+| `tutorials/00～12` | 为什么框架一步步长成现在这样 | 每章对应的源码和测试 |
 
 ## 当前架构主线
 
@@ -46,6 +47,7 @@ Beta 现在可以粗略看成四层：
 ```text
 Application / Harness
 ├── CLI / UI
+├── Coding Agent Assembly
 ├── Session / Compaction / Skills
 └── ExtensionHost / ExtensionRunner
         ↓
@@ -77,6 +79,8 @@ Subagent
 
 因此 `permission_mode`、`plan_mode`、`subagent_branch` 都没有进入 Agent Core。
 
+Coding Agent 通过 [`beta_agent.coding`](../src/beta_agent/coding/) 组装五个产品 Tool、workspace prompt、Skill metadata、Session/Compaction 和 ExtensionHost。`cwd` 只是路径解析基点，不是 sandbox；示例 Permission Gate 也不是完整命令安全系统。
+
 ## 运行与验证
 
 安装开发依赖后：
@@ -90,6 +94,7 @@ pytest
 
 ```bash
 python examples/deepseek_cli.py
+python examples/coding_agent_cli.py --cwd . --session .beta/session.jsonl
 ```
 
 Extension 组合示例位于：

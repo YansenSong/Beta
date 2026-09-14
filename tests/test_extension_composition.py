@@ -21,12 +21,12 @@ async def test_permission_gate_blocks_dangerous_bash_through_core_tool_runtime(t
     assert result.is_error and "permission-gate" in result.content and executed==[]
 
 async def test_plan_mode_reconfigures_tools_guards_bash_and_injects_context(tmp_path):
-    mod=load_example("plan_mode"); tools=[Tool("bash","bash",BashArgs,ok),Tool("write","write",EmptyArgs,ok),Tool("search","search",EmptyArgs,ok)]
+    mod=load_example("plan_mode"); tools=[Tool("bash","bash",BashArgs,ok),Tool("write","write",EmptyArgs,ok),Tool("write_file","write file",EmptyArgs,ok),Tool("search","search",EmptyArgs,ok)]
     agent=Agent(model=ScriptedModelAdapter([Message.assistant("planned")]),tools=tools); runner=ExtensionRunner(cwd=tmp_path,config=RuntimeConfig(active_tools=[t.name for t in tools]),session=SessionTree()); await runner.load([mod.extension]); host=bind_extensions(agent,runner)
     await host.run_command("/plan"); assert [tool.name for tool in agent.context.tools]==["bash","search"]
     unsafe=await runner.emit_tool_call(ToolCallEvent(ToolCall("1","bash",{"command":"rm x"}),BashArgs(command="rm x"),agent.context)); assert unsafe and unsafe.block
     transformed=await runner.emit_context([Message.user("inspect")]); assert "PLAN MODE ACTIVE" in transformed[-1].content
-    await host.run_command("/plan"); assert [tool.name for tool in agent.context.tools]==["bash","write","search"]
+    await host.run_command("/plan"); assert [tool.name for tool in agent.context.tools]==["bash","write","write_file","search"]
 
 async def test_subagent_is_a_normal_tool_and_child_history_stays_out_of_parent(tmp_path):
     mod=load_example("subagent")

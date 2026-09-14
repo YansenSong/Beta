@@ -28,3 +28,4 @@ packages = ["src/beta_agent"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+norecursedirs = ["fixtures"]

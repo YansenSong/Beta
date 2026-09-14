@@ -12,7 +12,7 @@ def extension(pi:ExtensionAPI)->None:
         nonlocal enabled,tools_before
         enabled=not enabled
         if enabled:
-            tools_before=ctx.get_active_tools(); ctx.set_active_tools(list(dict.fromkeys([n for n in tools_before if n not in {"write","edit","delete_file"}] + PLAN_MODE_TOOLS)))
+            tools_before=ctx.get_active_tools(); ctx.set_active_tools(list(dict.fromkeys([n for n in tools_before if n not in {"write","write_file","edit","delete_file"}] + PLAN_MODE_TOOLS)))
         else:
             ctx.set_active_tools(tools_before or ctx.get_active_tools()); tools_before=None
     pi.register_command("plan",description="切换只读 Plan Mode",handler=command)

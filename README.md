@@ -1,6 +1,6 @@
 # Beta Agent
 
-一个参考 Pi Agent 架构思想，并结合 `learn-pi-agent` 教程第 00～09 章设计实现的轻量级 Python 智能体框架。
+一个参考 Pi Agent 架构思想，并结合 `learn-pi-agent` 教程第 00～12 章设计实现的轻量级 Python 智能体框架。
 
 这个仓库的目标不是把 Pi 的 TypeScript 源码逐行翻译成 Python，而是保留其中最重要的架构边界，并用更符合 Python 使用习惯的方式重新组织：异步事件驱动的 Agent Loop、模型适配层、Tool Runtime、Steering / Follow-up 队列、Context Hook、可分支 Session、追加式 Compaction，以及按需加载的 Skill 机制。
 
@@ -17,6 +17,7 @@
 - Append-only 的 **SessionTree**，支持分支和 JSONL 持久化；
 - Branch-local 的 **CompactionEntry**，压缩 Context 但不删除原始历史；
 - **SkillCatalog**，只向 system prompt 注入 Skill metadata，正文按需通过普通 Tool 读取。
+- **Coding Agent 产品层**，组装 workspace、`read_file` / `write_file` / `edit` / `grep` / `bash`、Skills、Extensions、Session 和可选 Compaction。
 
 ## 安装
 
@@ -65,8 +66,9 @@ asyncio.run(main())
 
 ## 文档
 
-- [`docs/FRAMEWORK.md`](docs/FRAMEWORK.md)：完整中文框架说明，包括运行流程、模块职责、关键设计边界，以及教程 00～09 章和当前代码的对应关系；
+- [`docs/FRAMEWORK.md`](docs/FRAMEWORK.md)：完整中文框架说明，包括运行流程、模块职责、关键设计边界，以及教程 00～12 章和当前代码的对应关系；
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：更精简的架构边界与运行流程说明。
+- [`docs/tutorials/12-coding-agent.md`](docs/tutorials/12-coding-agent.md)：Chapter 12 Coding Agent 产品层组装说明。
 
 ## Steering 与 Follow-up
 
@@ -117,8 +119,8 @@ description: 排查数据库连接、慢查询与锁等待问题
 
 ## 当前范围
 
-这一版骨架刻意停留在教程第 00～09 章形成的能力边界附近。
+当前 Core 与产品层覆盖教程第 00～12 章；Coding Agent 位于 `beta_agent.coding`，不改变 Core 的 Agent Loop 和 Tool Runtime。
 
-暂时没有把 Extension Runtime、Coding Agent 专用交互、复杂 Provider 特性、Telemetry、Sandbox、MCP、更完整的持久化后端等能力提前塞进 Core。
+Coding Agent 的 `cwd` 只是路径解析基点，不是 sandbox；示例 Permission Gate 只是策略演示，不是完整命令安全系统。复杂 Provider 特性、Telemetry、Sandbox、MCP、更完整的持久化后端等仍不属于 Core 的职责。
 
 这些都适合作为后续扩展层，但不应该成为一个清晰、可理解的基础 Agent Runtime 的前置条件。

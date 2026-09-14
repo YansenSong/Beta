@@ -1,6 +1,6 @@
 # Beta Agent 教学文档
 
-这组文档参考 `learn-pi-agent` Chapter 00～11 的教学递进，并结合 Beta 当前 Python 实现重新组织。
+这组文档参考 `learn-pi-agent` Chapter 00～12 的教学递进，并结合 Beta 当前 Python 实现重新组织。
 
 它们不是原教程的逐句翻译，也不是另一套独立 demo Runtime。目标是直接围绕当前仓库理解：一个最小 Agent Framework 为什么会逐步长出 Message、Agent Loop、Event Stream、Tool Runtime、并行执行、Steering / Follow-up、Context、Session、Compaction、Skills，以及最终的 Extension Runtime 与 Extension Composition。
 
@@ -20,6 +20,7 @@
 | [09](09-skills.md) | Skill Catalog 与按需加载 | `skills.py`、`builtin_tools.py` |
 | [10](10-extension-runtime.md) | Extension API、Runner、Loader、Bridge | `extensions/` |
 | [11](11-extension-composition.md) | Permission、Plan Mode、Subagent 组合 | `examples/extensions/` |
+| [12](12-coding-agent.md) | Coding Agent 产品层组装 | `coding/`、`examples/coding_agent_cli.py` |
 
 ## 怎么读
 
@@ -45,7 +46,7 @@ Provider 差异留在 Adapter，Tool 复杂度留在 ToolRuntime，历史结构�
 
 ## Chapter 10～11 应重点观察什么
 
-前 00～09 章主要建立 primitive；10～11 章开始验证这些 primitive 能否组合出更完整的 Agent 行为。
+前 00～09 章主要建立 primitive；10～11 章开始验证这些 primitive 能否组合出更完整的 Agent 行为，12 章将它们组装成 Coding Agent 产品。
 
 读 Chapter 10 时重点看：
 
@@ -71,15 +72,15 @@ Subagent 是否仍然只是普通 Tool
 
 - [`../README.md`](../README.md)：`docs/` 总入口；
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md)：系统分层、数据流和稳定 invariant；
-- [`../FRAMEWORK.md`](../FRAMEWORK.md)：当前 00～11 完整框架说明；
+- [`../FRAMEWORK.md`](../FRAMEWORK.md)：当前 00～12 完整框架说明；
 - [`../EXTENSIONS.md`](../EXTENSIONS.md)：Extension API、Runner、Host、Tool、Command 的使用与约束；
 - 本目录：按“问题逐步出现”的顺序解释为什么形成这些模块。
 
 ## 当前范围
 
-目前覆盖 Chapter 00～11。
+目前覆盖 Chapter 00～12。
 
-下一阶段 Chapter 12 会进入 Coding Agent Assembly：
+Chapter 12 进入 Coding Agent Assembly：
 
 ```text
 read / write / edit / grep / bash
@@ -89,4 +90,4 @@ Skills
 Extensions
 ```
 
-重点将从“设计 Runtime primitive”转向“把已有 primitive 组装成实际可工作的 Coding Agent”。
+重点从“设计 Runtime primitive”转向“把已有 primitive 组装成实际可工作的 Coding Agent”。
