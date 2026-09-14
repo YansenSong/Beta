@@ -33,6 +33,7 @@ class CodingAgentOptions:
     skill_roots: Sequence[str | Path] = ()
     extensions: Sequence[ExtensionFactory] = ()
     extra_tools: Sequence[Tool[Any]] = ()
+    child_model_factory: Callable[[], ModelAdapter] | None = None
     session_file: str | Path | None = None
     compaction: CodingCompactionOptions | None = None
 
@@ -147,10 +148,20 @@ async def create_coding_agent(options: CodingAgentOptions) -> CodingAgentRuntime
     model_name = options.model_name
     if model_name is None:
         model_name = str(getattr(options.model, "model", "") or "")
+
+    services: dict[str, Any] = {
+        "cwd": cwd,
+        "skills": skills,
+        "tools": tools,
+        "model": options.model,
+    }
+    if options.child_model_factory is not None:
+        services["child_model_factory"] = options.child_model_factory
+
     config = RuntimeConfig(
         model=model_name,
         active_tools=[tool.name for tool in tools],
-        services={"cwd": cwd, "skills": skills, "tools": tools, "model": options.model},
+        services=services,
     )
     runner = ExtensionRunner(cwd=cwd, config=config, session=session)
     await runner.load(list(options.extensions))

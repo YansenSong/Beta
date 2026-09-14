@@ -18,8 +18,8 @@
 | [07](07-session-tree.md) | 可分支 Session Tree | `session.py` |
 | [08](08-context-compaction.md) | Append-only Compaction | `compaction.py`、`session.py` |
 | [09](09-skills.md) | Skill Catalog 与按需加载 | `skills.py` + 产品层普通读取 Tool |
-| [10](10-extension-runtime.md) | Extension API、Runner、Loader、Bridge | `extensions/` |
-| [11](11-extension-composition.md) | Permission、Plan Mode、Subagent 组合 | `examples/extensions/` |
+| [10](10-extension-runtime.md) | Extension API、Runner、Loader、Bridge | `src/beta_agent/extensions/` |
+| [11](11-extension-composition.md) | Permission、Plan Mode、Subagent 组合 | `src/coding_agent/extensions/` |
 | [12](12-coding-agent.md) | Coding Agent 产品层组装 | `src/coding_agent/`、`examples/coding_agent_cli.py` |
 
 ## 怎么读
@@ -67,6 +67,8 @@ Subagent 是否仍然只是普通 Tool
 ```
 
 如果这些能力需要直接修改 `Agent._run()`，就说明扩展边界没有真正成立。
+
+Chapter 11 的三个组合案例现在已经是 `coding_agent.extensions` 的正式产品模块；`examples/` 不再保留一份重复实现。
 
 ## 与其他文档的关系
 

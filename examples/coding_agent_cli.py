@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 from beta_agent.adapters import OpenAICompatibleAdapter
 from coding_agent import CodingAgentOptions, create_coding_agent
-from coding_agent.extensions import permission_gate_extension
+from coding_agent.extensions import permission_gate_extension, plan_mode_extension, subagent_extension
 
 
 def _arguments() -> argparse.Namespace:
@@ -47,21 +47,27 @@ async def _chat(arguments: argparse.Namespace) -> None:
         "https://api.deepseek.com" if os.environ.get("DEEPSEEK_API_KEY") else "https://api.openai.com/v1"
     )
 
-    model = OpenAICompatibleAdapter(model=model_name, api_key=api_key, base_url=base_url)
-    extensions = [] if arguments.no_permission_gate else [permission_gate_extension]
+    def make_model() -> OpenAICompatibleAdapter:
+        return OpenAICompatibleAdapter(model=model_name, api_key=api_key, base_url=base_url)
+
+    extensions = [plan_mode_extension, subagent_extension]
+    if not arguments.no_permission_gate:
+        extensions.insert(0, permission_gate_extension)
+
     runtime = await create_coding_agent(
         CodingAgentOptions(
             cwd=arguments.cwd,
-            model=model,
+            model=make_model(),
             model_name=model_name,
             extensions=extensions,
+            child_model_factory=make_model,
             session_file=arguments.session,
         )
     )
 
     print(f"Beta Coding Agent 已启动，模型：{model_name}")
     print(f"工作区：{runtime.cwd}")
-    print("输入 exit / quit / q 退出。\n")
+    print("输入 /plan 切换只读 Plan Mode；输入 exit / quit / q 退出。\n")
     try:
         while True:
             try:
@@ -74,6 +80,13 @@ async def _chat(arguments: argparse.Namespace) -> None:
             if user_input.lower() in {"exit", "quit", "q"}:
                 print("已退出。")
                 return
+            if user_input.startswith("/"):
+                try:
+                    await runtime.run_command(user_input)
+                    print(f"[command] {user_input} 已执行。\n")
+                except Exception as exc:
+                    print(f"[command error] {exc}\n")
+                continue
 
             print("AI > ", end="", flush=True)
             printed_length = 0

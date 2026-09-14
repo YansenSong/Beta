@@ -1,48 +1,50 @@
 # Extension Runtime 使用与设计指南
 
-本文档说明 Beta 在 Chapter 10～11 中加入的 Extension Runtime：如何加载 Extension、如何注册 Tool / Command / Event Handler，以及 Permission Gate、Plan Mode、Subagent 为什么都能在不修改 Agent Core 的情况下实现。
+本文档说明 Beta 的 Extension Runtime：如何注册 Tool / Command / Event Handler，以及 Coding Agent 中 Permission Gate、Plan Mode、Subagent 为什么都能在不修改 Agent Core 的情况下实现。
 
-如果只是想按教程理解演进过程，请先看 [`tutorials/10-extension-runtime.md`](tutorials/10-extension-runtime.md) 和 [`tutorials/11-extension-composition.md`](tutorials/11-extension-composition.md)。本文更偏向当前代码的使用说明和约束参考。
+如果只是按教程理解演进过程，请先看 [`tutorials/10-extension-runtime.md`](tutorials/10-extension-runtime.md) 和 [`tutorials/11-extension-composition.md`](tutorials/11-extension-composition.md)。
 
 ## 1. Extension 的角色
 
-Extension 不是第二套 Agent Runtime。
-
-它只做两件事：
+Extension 不是第二套 Agent Runtime。它只负责把外部行为注册到已有 seam：
 
 ```text
-加载阶段
 Extension factory
     ↓
-注册 Tool / Command / Handler
+register Tool / Command / Handler
     ↓
-ExtensionRunner 保存 registration
-
-运行阶段
-已有 Agent seam
+ExtensionRunner
     ↓
-ExtensionRunner 分发已注册行为
+AgentConfig hooks + EventStream + active tools
 ```
 
-因此 Extension 不直接拿 `Agent`、`ToolRuntime` 或内部 registry，也不应该修改它们的私有状态。
+Agent Loop、ToolRuntime、Message protocol 都仍然只有一套。
 
-当前公开入口位于：
+通用 Extension Runtime 位于：
 
-```python
-from beta_agent.extensions import (
-    ExtensionAPI,
-    ExtensionRunner,
-    ExtensionTool,
-    RuntimeConfig,
-    ToolCallDecision,
-    bind_extensions,
-    load_extensions_from_dir,
-)
+```text
+src/beta_agent/extensions/
+├── types.py
+├── runner.py
+├── wrapper.py
+├── loader.py
+└── bridge.py
 ```
+
+Coding Agent 的正式产品级 Extension 位于：
+
+```text
+src/coding_agent/extensions/
+├── permission_gate.py
+├── plan_mode.py
+└── subagent.py
+```
+
+`examples/` 不再维护一套重复的 Extension 源码。
 
 ## 2. 最小 Extension
 
-一个 Python Extension 本质上是接收 `ExtensionAPI` 的 factory：
+一个 Extension 本质上是接收 `ExtensionAPI` 的 factory：
 
 ```python
 from beta_agent.extensions import ExtensionAPI
@@ -55,11 +57,9 @@ def extension(pi: ExtensionAPI) -> None:
     pi.on("message_end", on_message_end)
 ```
 
-factory 在加载时只执行一次。真正长期存在的是 `on_message_end` 这条 registration。
+factory 在加载时执行一次，真正长期存在的是注册结果。
 
 ## 3. Runner 与 Host
-
-运行时组装通常包含三部分：
 
 ```python
 from beta_agent import Agent, SessionTree
@@ -71,27 +71,23 @@ runner = ExtensionRunner(
     config=RuntimeConfig(model="deepseek-chat"),
     session=session,
 )
-
 await runner.load([extension_a, extension_b])
 
 agent = Agent(model=model, tools=base_tools)
 host = bind_extensions(agent, runner)
-
 messages = await host.run("你好")
 ```
 
-这里：
+职责边界：
 
-- `Agent` 仍然负责原来的 Agent Loop；
-- `ExtensionRunner` 保存注册信息和组合规则；
-- `ExtensionHost` 把 Runner 接到现有 `AgentConfig` Hook 与 EventStream；
-- `SessionTree` 为 Extension 提供可持久化的当前会话上下文。
-
-`bind_extensions()` 不会创建第二套 Agent Loop。
+- `Agent`：稳定 Agent Loop；
+- `ExtensionRunner`：registration、dispatch、错误隔离；
+- `ExtensionHost`：把 Runner 接到现有 Core seam；
+- `SessionTree`：为 Extension 提供当前会话上下文。
 
 ## 4. 原子加载
 
-每个 Extension factory 都先写入临时 registration：
+每个 factory 先写入临时 registration：
 
 ```text
 factory
@@ -99,31 +95,15 @@ factory
 PendingRegistrations
   ↓
 成功？
-├── 是 → commit
-└── 否 → discard
+├── yes → commit all
+└── no  → discard all
 ```
 
-例如：
+因此 factory 中途抛错不会留下“半个 Extension”。错误记录在 `runner.errors`，单个 Extension 失败也不会阻止其他 Extension 加载。
 
-```python
-def broken(pi):
-    pi.register_tool(...)
-    raise RuntimeError("boom")
-```
+## 5. 三种事件组合语义
 
-`broken` 加载失败后，它前面注册的 Tool 也不会留在 Runner 中。
-
-错误会记录到：
-
-```python
-runner.errors
-```
-
-单个 Extension 加载失败不会阻止其他 Extension 继续加载。
-
-## 5. Event Handler 的三种组合语义
-
-当前支持四类事件：
+当前主要事件：
 
 ```text
 tool_call
@@ -132,78 +112,30 @@ message_end
 turn_end
 ```
 
-它们并不是完全相同的 EventEmitter 语义。
+### Observe：`message_end` / `turn_end`
 
-### 5.1 Observe：`message_end` / `turn_end`
+按注册顺序执行。单个 handler 失败会被记录，但不会阻断后续 handler。
 
-这类事件按注册顺序依次执行：
+### Intercept：`tool_call`
 
-```text
-A handler
-   ↓
-B handler
-   ↓
-C handler
-```
+handler 可以返回 `ToolCallDecision(block=True, ...)`。第一个 block 会立即短路，最终仍由 Core ToolRuntime 生成模型可见 error ToolResult。
 
-单个 handler 抛异常时，Runner 记录错误并继续执行后面的 handler。
+### Transform：`context`
 
-适合：
-
-- 日志；
-- 状态统计；
-- Session 派生状态；
-- Extension 自己的轻量观测逻辑。
-
-### 5.2 Intercept：`tool_call`
-
-`tool_call` 可以返回 `ToolCallDecision`：
-
-```python
-from beta_agent.extensions import ToolCallDecision
-
-async def guard(event, ctx):
-    if event.tool_call.name == "delete_file":
-        return ToolCallDecision(
-            block=True,
-            reason="当前环境禁止删除文件",
-        )
-```
-
-一旦某个 handler 返回 `block=True`，后面的 `tool_call` handler 不再执行。
-
-最终 block 会回到原来的 `before_tool_call` seam，并由 `ToolRuntime` 规范化成模型可见的 error Tool Result。
-
-### 5.3 Inject：`context`
-
-`context` 是链式变换：
+顺序 pipeline：
 
 ```text
 messages0
-   ↓ Extension A
+↓ A
 messages1
-   ↓ Extension B
+↓ B
 messages2
-   ↓ ModelAdapter
+↓ Model
 ```
 
-后一个 handler 必须看到前一个 handler 的结果。
+后一个 handler 总是看到前一个 handler 的输出。
 
-例如：
-
-```python
-from beta_agent import Message
-
-async def inject_mode(event, ctx):
-    return [
-        *event.messages,
-        Message.user("[READ ONLY MODE] 只分析，不修改文件。"),
-    ]
-```
-
-这只改变当前模型调用看到的 Context，不要求改写 Agent 的完整 Runtime history。
-
-## 6. 注册 Extension Tool
+## 6. Extension Tool
 
 Extension Tool 比普通 Tool 多一个 `ExtensionContext`：
 
@@ -217,11 +149,10 @@ class EchoArgs(BaseModel):
     text: str
 
 
-async def echo(args, ctx, tool_ctx):
-    return ToolResult(content=f"{ctx.cwd}: {args.text}")
-
-
 def extension(pi: ExtensionAPI) -> None:
+    async def echo(args, ctx, tool_ctx):
+        return ToolResult(content=f"{ctx.cwd}: {args.text}")
+
     pi.register_tool(
         ExtensionTool(
             name="echo",
@@ -232,157 +163,127 @@ def extension(pi: ExtensionAPI) -> None:
     )
 ```
 
-注册以后，`wrapper.py` 会把它包装成普通 `Tool`。
-
-之后继续走已有路径：
+Runner 会把它包装成普通 Core `Tool`，因此继续复用：
 
 ```text
 lookup
-→ prepare / validate
+→ prepare_arguments
+→ validate
 → before_tool_call
 → execute
 → after_tool_call
 → Tool Result
 ```
 
-因此 Extension Tool 自动继承原有 ToolRuntime 的参数校验、并行/串行语义、进度事件和失败归一化。
+不会出现第二套 Tool protocol。
 
 ## 7. Active Tools
 
-Extension 不直接修改 `agent.context.tools`。
-
-它使用：
+Extension 不直接改 `agent.context.tools`，而是调用：
 
 ```python
 ctx.get_active_tools()
-ctx.set_active_tools([...])
+ctx.set_active_tools(names)
 ```
 
-`ExtensionRunner` 保存 Tool 名字，bridge 负责把这些名字解析成实际 `Tool`，并把结果应用到运行中的 Agent。
-
-因此：
+bridge 负责：
 
 ```text
-Extension
-   ↓ set_active_tools(names)
-ExtensionRunner
-   ↓ resolve
+Tool names
+↓ resolve
 Tool objects
-   ↓ apply
-running Agent.context.tools
+↓ apply
+running Agent
 ```
 
-下一次 ModelAdapter 调用立即看到新的 Tool 集合。
+所以产品模式可以动态改变下一次模型调用可见的 Tool，而不重建 Agent。
 
-如果某个 Extension Tool 在执行过程中新增了 active Tool，wrapper 会把新增 Tool 名写到：
+## 8. Command
 
-```python
-ToolResult.added_tool_names
-```
-
-## 8. 注册 Command
-
-Command 属于 Harness / 用户交互层，而不是模型 Tool Call。
+Command 属于用户 / Harness 层，不是模型 Tool Call：
 
 ```python
 def extension(pi: ExtensionAPI) -> None:
     async def status(args, ctx):
         print(ctx.get_active_tools())
 
-    pi.register_command(
-        "status",
-        description="显示当前工具状态",
-        handler=status,
-    )
+    pi.register_command("status", description="显示工具状态", handler=status)
 ```
 
-执行：
+调用：
 
 ```python
 await host.run_command("/status")
 ```
 
-Runner 会自动去掉开头的 `/`，并把剩余文本作为参数交给 handler。
-
 ## 9. Session 与 Extension 状态
 
-`ExtensionContext.session` 指向当前 `SessionTree`。
+`ExtensionContext.session` 指向当前 `SessionTree`。Extension 可以维护运行期闭包状态，也可以通过 `ctx.append_entry(...)` 追加自定义 Session Entry。
 
-Extension 可以把持久状态设计成：
+不要为了一个 Extension：
 
-```text
-运行期 module state
-        +
-Session append-only log
-```
-
-也可以通过：
-
-```python
-ctx.append_entry("my-extension-state", {"enabled": True})
-```
-
-追加 custom entry。
-
-重要原则仍然是：不要为了某个 Extension 修改 Agent message protocol，也不要让 Extension 自己维护另一套隐藏 Session。
+- 修改 Agent message protocol；
+- monkey-patch `Agent._run()`；
+- 自建第二套隐藏 Tool Runtime；
+- 让产品模式反向进入 Core。
 
 ## 10. 动态加载目录
 
-当前 Loader 有意保持简单：
+通用 Loader 仍支持：
 
 ```python
-factories = load_extensions_from_dir("extensions")
+factories = load_extensions_from_dir("some/extensions")
 await runner.load(factories)
 ```
 
-目录中的 Python 文件只要暴露：
+目录中的 Python 文件只需要暴露：
 
 ```python
 def extension(pi):
     ...
 ```
 
-就可以成为 Extension 入口。
+当前没有实现 pip entry-point discovery、hot reload、Extension API version negotiation 或第三方包权限模型。
 
-当前阶段没有实现：
+## 11. Coding Agent 的三个正式 Extension
 
-- pip entry point discovery；
-- package dependency isolation；
-- hot reload；
-- Extension API version negotiation；
-- 第三方包权限模型。
-
-这些属于未来更外层的插件生态问题，不应该反向复杂化当前 Runner。
-
-## 11. Chapter 11 的三个组合案例
+Chapter 11 的组合案例现在已经产品化到 `coding_agent.extensions`，不再放在 `examples/extensions/`。
 
 ### Permission Gate
 
-位置：
+```python
+from coding_agent.extensions import permission_gate_extension
+```
+
+实现位置：
 
 ```text
-examples/extensions/permission_gate.py
+src/coding_agent/extensions/permission_gate.py
 ```
 
 机制：
 
 ```text
 tool_call
-→ 判断 bash 是否危险
+→ inspect bash command
 → block / allow
 ```
 
-Agent Core 不认识 permission mode。
+它只是策略示范，不等同于 OS sandbox 或完整 trust model。
 
 ### Plan Mode
 
-位置：
-
-```text
-examples/extensions/plan_mode.py
+```python
+from coding_agent.extensions import plan_mode_extension
 ```
 
-一份 `enabled` 状态同时驱动：
+实现位置：
+
+```text
+src/coding_agent/extensions/plan_mode.py
+```
+
+默认关闭，通过 `/plan` 显式切换。一份闭包状态同时驱动：
 
 ```text
 active tools
@@ -390,17 +291,21 @@ context injection
 bash tool_call policy
 ```
 
-退出 Plan Mode 时恢复进入前真实的 active tools，而不是恢复某份写死的默认列表。
+进入时保存实际 active tools，移除 `write_file` / `edit` 等 mutation Tool，并在可用时加入 `subagent`；退出时恢复进入前的真实快照。
 
 ### Subagent
 
-位置：
-
-```text
-examples/extensions/subagent.py
+```python
+from coding_agent.extensions import subagent_extension
 ```
 
-Parent 只看到一次普通 Tool Call：
+实现位置：
+
+```text
+src/coding_agent/extensions/subagent.py
+```
+
+Parent 只看到一个普通 Tool：
 
 ```text
 Parent Agent
@@ -410,39 +315,41 @@ Parent Agent
 → Parent continues
 ```
 
-Child 内部 message history 不会直接混进 Parent history。
+Child history 不直接进入 Parent history。
+
+通过 `CodingAgentRuntime` 使用时，需要提供子模型 factory：
+
+```python
+runtime = await create_coding_agent(
+    CodingAgentOptions(
+        cwd=".",
+        model=parent_model,
+        extensions=[plan_mode_extension, subagent_extension],
+        child_model_factory=lambda: make_child_model(),
+    )
+)
+```
+
+`subagent_extension` 不会因为文件存在就自动启用；必须显式放进 `extensions`。当前 Plan Mode 会在运行期把已注册的 `subagent` 加入 active tools。
 
 ## 12. 编写 Extension 时的边界清单
 
-优先遵守下面这些规则：
+优先使用：
 
 ```text
-需要增加模型能力
-→ register_tool
-
-需要用户命令
-→ register_command
-
-需要观察生命周期
-→ message_end / turn_end
-
-需要阻止某次 Tool Call
-→ tool_call
-
-需要临时改变模型看到的 Context
-→ context
-
-需要切换模型可见 Tool
-→ set_active_tools
-
-需要长期状态
-→ Session / custom entry
+增加模型能力      → register_tool
+用户命令          → register_command
+观察生命周期      → message_end / turn_end
+阻止 Tool Call    → tool_call
+临时 Context 修改 → context
+动态 Tool 切换    → set_active_tools
+长期状态          → Session / custom entry
 ```
 
-尽量避免：
+避免：
 
 ```text
-Extension 直接持有 Agent
+Extension 直接持有并修改 Agent 私有状态
 Extension 直接修改 ToolRuntime
 Extension monkey-patch Agent._run
 Extension 自建第二套 Tool execution protocol
@@ -451,7 +358,7 @@ Extension 把产品模式硬编码进 Core
 
 ## 13. 对应源码和测试
 
-核心实现：
+Core Extension Runtime：
 
 ```text
 src/beta_agent/extensions/types.py
@@ -461,21 +368,31 @@ src/beta_agent/extensions/loader.py
 src/beta_agent/extensions/bridge.py
 ```
 
+Coding Agent 产品 Extension：
+
+```text
+src/coding_agent/extensions/permission_gate.py
+src/coding_agent/extensions/plan_mode.py
+src/coding_agent/extensions/subagent.py
+```
+
 测试：
 
 ```text
 tests/test_extension_runtime.py
 tests/test_extension_composition.py
+tests/test_coding_assembly.py
 ```
 
-当修改 Extension Runtime 时，应优先保证这些 invariant 继续成立：
+应持续保护这些 invariant：
 
 ```text
-factory load 是原子的
-handler failure 被隔离
-tool_call block 会短路
-context transform 是顺序 pipeline
+factory load 原子
+handler failure 隔离
+tool_call block 短路
+context transform 顺序组成 pipeline
 Extension Tool 继续走 Core ToolRuntime
 active tools 对下一次模型调用立即生效
-Parent / Child Agent history 保持隔离
+Parent / Child Agent history 隔离
+Coding Agent product extension 不反向污染 beta_agent Core
 ```

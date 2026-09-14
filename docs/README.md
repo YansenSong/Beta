@@ -6,7 +6,7 @@
 
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md)：先看系统边界、数据流和几个必须保持稳定的不变量；
 2. [`FRAMEWORK.md`](FRAMEWORK.md)：再看每个模块为什么存在、彼此如何协作；
-3. [`EXTENSIONS.md`](EXTENSIONS.md)：理解 Chapter 10～11 新加入的 Extension Runtime，以及如何写 Extension；
+3. [`EXTENSIONS.md`](EXTENSIONS.md)：理解 Chapter 10～11 新加入的 Extension Runtime，以及如何写和组合 Extension；
 4. [`tutorials/`](tutorials/)：按 Chapter 00～12 的顺序重新走一遍框架演进过程。
 
 ## 当前文档覆盖范围
@@ -37,7 +37,7 @@ Chapter 12 已实现 Coding Agent Assembly 产品层。
 | --- | --- | --- |
 | `ARCHITECTURE.md` | 系统边界和稳定 invariant 是什么 | `src/beta_agent/` Core + `src/coding_agent/` 产品层 |
 | `FRAMEWORK.md` | 当前框架各模块如何协作 | `agent.py`、`tools.py`、`session.py`、`extensions/` |
-| `EXTENSIONS.md` | 如何编写、加载和组合 Extension | `src/beta_agent/extensions/`、`examples/extensions/` |
+| `EXTENSIONS.md` | 如何编写、加载和组合 Extension | `src/beta_agent/extensions/`、`src/coding_agent/extensions/` |
 | `tutorials/00～12` | 为什么框架一步步长成现在这样 | 每章对应的源码和测试 |
 
 ## 当前架构主线
@@ -85,7 +85,9 @@ Subagent
 
 因此 `permission_mode`、`plan_mode`、`subagent_branch` 都没有进入 Agent Core。
 
-Coding Agent 通过 [`coding_agent`](../src/coding_agent/) 组装五个产品 Tool、workspace prompt、Skill metadata、Session/Compaction 和 ExtensionHost。`cwd` 只是路径解析基点，不是 sandbox；示例 Permission Gate 也不是完整命令安全系统。
+Coding Agent 通过 [`coding_agent`](../src/coding_agent/) 组装五个产品 Tool、workspace prompt、Skill metadata、Session/Compaction 和 ExtensionHost。产品级 Permission Gate、Plan Mode 与 Subagent 位于 [`coding_agent/extensions`](../src/coding_agent/extensions/)；它们默认不会因为文件存在就自动启用，而是由组装方显式加载。
+
+`cwd` 只是路径解析基点，不是 sandbox；Permission Gate 也不是完整命令安全系统。
 
 ## 运行与验证
 
@@ -103,10 +105,6 @@ python examples/deepseek_cli.py
 python examples/coding_agent_cli.py --cwd . --session .beta/session.jsonl
 ```
 
-Extension 组合示例位于：
-
-```text
-examples/extensions/
-```
+`examples/` 只保留可运行 CLI，不再维护一套与产品实现重复的 Extension 示例源码。
 
 当文档与代码出现不一致时，以测试和当前 `main` 源码为准，并同步修正文档。

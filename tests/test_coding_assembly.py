@@ -5,13 +5,14 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from beta_agent import Message, ScriptedModelAdapter, Tool, ToolResult
+from beta_agent import Message, ScriptedModelAdapter, Tool, ToolCall, ToolResult
 from beta_agent.extensions import ExtensionTool
 from coding_agent import (
     CodingAgentOptions,
     CodingCompactionOptions,
     create_coding_agent,
 )
+from coding_agent.extensions import plan_mode_extension, subagent_extension
 
 
 class NoArgs(BaseModel):
@@ -64,6 +65,36 @@ async def test_assembly_tools_prompt_skills_and_extension_factory(tmp_path: Path
     assert [tool.name for tool in runtime.runner.get_registered_tools()] == ["extension_tool"]
     await runtime.run_command("/remember value")
     assert command_seen == ["value"]
+    runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_can_activate_product_subagent_with_configured_child_factory(tmp_path: Path):
+    parent_model = ScriptedModelAdapter(
+        [
+            Message.assistant(
+                tool_calls=[ToolCall("sub", "subagent", {"task": "inspect independently"})],
+                stop_reason="tool_calls",
+            ),
+            Message.assistant("parent done"),
+        ]
+    )
+    runtime = await create_coding_agent(
+        CodingAgentOptions(
+            cwd=tmp_path,
+            model=parent_model,
+            extensions=[plan_mode_extension, subagent_extension],
+            child_model_factory=lambda: ScriptedModelAdapter([Message.assistant("child analysis")]),
+        )
+    )
+
+    await runtime.run_command("/plan")
+    assert [tool.name for tool in runtime.agent.context.tools] == ["read_file", "grep", "bash", "subagent"]
+
+    await runtime.run("delegate analysis")
+    tool_result = next(message for message in runtime.agent.messages if message.role == "tool")
+    assert tool_result.content == "child analysis"
+    assert tool_result.metadata["details"]["child_messages"] == 2
     runtime.close()
 
 
