@@ -39,7 +39,7 @@ _SAFE_PATTERNS = tuple(
 
 
 def is_safe_command(command: str) -> bool:
-    """Return whether a shell command is allowed while Plan Mode is active."""
+    """返回 Plan Mode active 时是否允许执行该 shell command。"""
 
     return not any(pattern.search(command) for pattern in _DESTRUCTIVE_PATTERNS) and any(
         pattern.search(command) for pattern in _SAFE_PATTERNS
@@ -47,12 +47,11 @@ def is_safe_command(command: str) -> bool:
 
 
 def plan_mode_extension(api: ExtensionAPI) -> None:
-    """Register the Coding Agent's opt-in read-only planning mode.
+    """为 Coding Agent 注册 opt-in 的只读 Plan Mode。
 
-    The extension starts disabled. ``/plan`` snapshots the currently active
-    tools, removes mutating tools, adds Plan Mode helpers that are actually
-    available in the runtime, and injects a planning instruction into model
-    context. A second ``/plan`` restores the exact pre-plan tool snapshot.
+    extension 默认处于 disabled。``/plan`` 会保存当前 active tool 快照，移除 mutating tool，
+    加入 Runtime 中实际可用的 Plan Mode helper，并向 model context 注入 planning instruction。
+    再次执行 ``/plan`` 时，会精确恢复进入 Plan Mode 前的 tool 快照。
     """
 
     enabled = False
@@ -96,7 +95,7 @@ def plan_mode_extension(api: ExtensionAPI) -> None:
     api.on("context", inject_context)
 
 
-# Conventional module-level factory name for directory-based extension loading.
+# directory-based extension loading 使用的常规 module-level factory 名称。
 extension = plan_mode_extension
 
 __all__ = [
