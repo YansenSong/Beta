@@ -40,7 +40,7 @@ class CodingAgentOptions:
 
 @dataclass(slots=True)
 class CodingAgentRuntime:
-    """Product facade that keeps normal Coding Agent calls on ExtensionHost."""
+    """确保常规 Coding Agent 调用统一经过 ExtensionHost 的 product facade。"""
 
     agent: Agent
     host: ExtensionHost
@@ -76,8 +76,8 @@ class CodingAgentRuntime:
         await self.host.run_command(command)
 
     async def save_session(self) -> None:
-        # ExtensionHost already appends every message_end event.  In
-        # particular, do not append agent.messages here a second time.
+        # ExtensionHost 已经会 append 每个 message_end event。
+        # 特别注意，这里不要再次 append agent.messages。
         if self.compaction is not None:
             entry = await compact_session(
                 self.session,
@@ -133,7 +133,7 @@ def _check_unique_tools(tools: Sequence[Tool[Any]], *, source: str) -> None:
 
 
 async def create_coding_agent(options: CodingAgentOptions) -> CodingAgentRuntime:
-    """Assemble a Coding Agent from the existing Core and Extension Runtime."""
+    """基于现有 Core 和 Extension Runtime 组装 Coding Agent。"""
 
     cwd = Path(options.cwd).expanduser().resolve()
     if not cwd.exists():
