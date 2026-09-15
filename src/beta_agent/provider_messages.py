@@ -55,13 +55,13 @@ def _convert_content(message: AgentMessage) -> list[ProviderContent]:
 
 
 def default_convert_to_llm(messages: Sequence[AgentMessage]) -> list[ProviderMessage]:
-    """Strip runtime-only fields and convert AgentMessage to provider DTOs."""
+    """移除仅供 Runtime 使用的字段，并将 AgentMessage 转换为 Provider DTO。"""
 
     converted: list[ProviderMessage] = []
     for message in messages:
         if message.role not in {"system", "user", "assistant", "tool"}:
-            # Runtime custom messages are intentionally not provider-visible by
-            # default. A product may supply an explicit converter if needed.
+            # Runtime custom message 默认不会暴露给 Provider；
+            # 如有需要，产品层可以显式提供 converter。
             continue
         converted.append(
             ProviderMessage(

@@ -15,7 +15,7 @@ from .types import MessageEndEvent, ToolCallEvent, TurnEndEvent
 
 @dataclass(slots=True)
 class ExtensionHost:
-    """Harness layer that binds ExtensionRunner to one Agent."""
+    """把 ExtensionRunner 绑定到单个 Agent 的 harness layer。"""
 
     agent: Agent
     runner: ExtensionRunner
@@ -26,8 +26,8 @@ class ExtensionHost:
     _active_outer: EventStream[list[AgentMessage]] | None = None
 
     def stream(self, prompt) -> EventStream[list[AgentMessage]]:
-        # Create the inner stream synchronously. This makes Agent's active-run
-        # guard visible to callers before the outer host task is scheduled.
+        # 同步创建 inner stream，让调用方在 outer host task 被调度之前，
+        # 就能看到 Agent 的 active-run guard。
         self._ensure_outer_idle()
         inner = self.agent.stream(prompt)
 
@@ -38,8 +38,7 @@ class ExtensionHost:
                     await emit(event)
                 return await inner.result()
             except asyncio.CancelledError:
-                # Cancelling only the host wrapper must never leave the Agent
-                # provider/tool task running underneath it.
+                # 只取消 host wrapper 时，绝不能让底层 Agent 的 provider/tool task 继续运行。
                 self.agent.abort()
                 await inner.wait()
                 raise
@@ -116,8 +115,8 @@ class ExtensionHost:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # Persistence/lifecycle wiring is infrastructure, unlike an
-                # ordinary extension handler (which ExtensionRunner isolates).
+                # Persistence/lifecycle wiring 属于 infrastructure，
+                # 不同于 ExtensionRunner 会隔离处理的普通 extension handler。
                 self.agent._fail_from_bridge(exc)
         elif event.type == "turn_end" and event.message is not None:
             try:
@@ -136,7 +135,7 @@ class ExtensionHost:
 
 
 def bind_extensions(agent: Agent, runner: ExtensionRunner, *, persist_messages: bool = True) -> ExtensionHost:
-    """Connect Extension registrations to Core seams and return the harness used to run/observe the Agent."""
+    """把 Extension registration 接到 Core seam，并返回用于运行/观察 Agent 的 harness。"""
 
     original_tools = list(agent.context.tools)
     extension_tools = runner.get_registered_tools()

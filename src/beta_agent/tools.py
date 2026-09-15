@@ -50,7 +50,7 @@ class ToolExecutionContext:
         cancellation: CancellationToken | None = None,
         _emit: Emit | None = None,
     ) -> None:
-        """Support both the P0 ``(id, name, token, emit)`` and old shape."""
+        """同时兼容 P0 的 ``(id, name, token, emit)`` 和旧 shape。"""
 
         if _emit is not None:
             emit_value = _emit
@@ -165,9 +165,8 @@ class ToolRuntime:
             terminate = bool(finalized) and all(item.result.terminate for item in finalized)
             return ToolBatchResult(messages=messages, terminate=terminate, aborted=aborted)
         except asyncio.CancelledError:
-            # Root Agent cancellation may arrive while a preflight or a child
-            # task is running.  Convert the entire batch to a protocol-complete
-            # result set before returning control to Agent.
+            # Root Agent cancellation 可能在 preflight 或 child task 运行时到达。
+            # 在把控制权交还给 Agent 前，先把整批调用转换成协议完整的 result set。
             token.cancel()
             finalized = [_aborted(call) for call in calls]
             messages = await self._commit(finalized, emit)
@@ -213,8 +212,8 @@ class ToolRuntime:
         emit: Emit,
         cancellation: CancellationToken,
     ) -> tuple[list[_Finalized], bool]:
-        # Lookup / argument preparation / validation / before hook remain in
-        # source order. Only the prepared execute phase is concurrent.
+        # Lookup / argument preparation / validation / before hook 仍按 source order 执行；
+        # 只有准备完成后的 execute phase 会并发运行。
         entries: list[_Finalized | _Prepared | None] = [None] * len(calls)
         for index, call in enumerate(calls):
             if cancellation.cancelled:
@@ -237,8 +236,8 @@ class ToolRuntime:
 
         async def run(index: int, entry: _Prepared) -> _Finalized:
             item = await self._execute_prepared(context, entry, emit, cancellation)
-            # execution_end follows completion order; the final message commit
-            # below still consumes the gathered values in source order.
+            # execution_end 按完成顺序产生；下面最终 message commit
+            # 仍会按 source order 消费 gather 后的值。
             await self._emit_end(item, emit)
             return item
 
@@ -292,8 +291,8 @@ class ToolRuntime:
             entry = entries[index]
             if isinstance(entry, _Finalized):
                 continue
-            # A prepared entry already emitted tool_execution_start during
-            # source-order preflight, so only unprepared entries need a start.
+            # 已 prepared 的 entry 在按 source order 的 preflight 中已经发出 tool_execution_start，
+            # 因此只有尚未 prepared 的 entry 需要补发 start。
             if entry is None:
                 await self._emit_start(calls[index], emit)
             item = _aborted(calls[index])
@@ -307,7 +306,7 @@ class ToolRuntime:
         call: ToolCall,
         cancellation: CancellationToken,
     ) -> _Prepared | _Finalized:
-        # preflight: lookup -> prepare arguments -> schema validate -> before hook。
+        # preflight 顺序为：lookup -> prepare arguments -> schema validate -> before hook。
         # 任一步失败都会被规范化成 Tool Result，让模型下一轮能够“看到失败原因”并自我修正。
         cancellation.throw_if_cancelled()
         tool = next((item for item in context.tools if item.name == call.name), None)
@@ -356,8 +355,8 @@ class ToolRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # Permission and policy hooks fail closed. The target Tool is
-                # never called when its before hook cannot make a decision.
+                # Permission 和 policy hook 采用 fail closed；当 before hook 无法作出决定时，
+                # 绝不会调用目标 Tool。
                 return _Finalized(
                     call,
                     ToolResult(
@@ -399,10 +398,10 @@ class ToolRuntime:
             )
             is_error = False
         except asyncio.CancelledError:
-            # The batch boundary turns this into an aborted Tool Result. A
-            # direct Tool.execute caller still receives real task cancellation.
+            # batch boundary 会把这里转换成 aborted Tool Result；
+            # 直接调用 Tool.execute 的调用方仍会收到真实的 task cancellation。
             raise
-        except Exception as exc:  # tool failures become model-visible results
+        except Exception as exc:  # Tool failure 会被转换为 model-visible result。
             result = ToolResult(
                 content=f"Tool execution failed: {exc}",
                 details={"stage": "tool_execute", "exception_type": type(exc).__name__},

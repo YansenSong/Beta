@@ -13,7 +13,7 @@ from ..types import AgentMessage, ModelEvent, ToolCall
 
 
 class OpenAICompatibleAdapter:
-    """Minimal streaming adapter for OpenAI-compatible Chat Completions APIs."""
+    """用于 OpenAI-compatible Chat Completions API 的最小 streaming adapter。"""
 
     def __init__(
         self,
@@ -107,9 +107,8 @@ class OpenAICompatibleAdapter:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # Provider/network/decoding failures are part of the model stream
-            # contract. Agent retains a defensive catch for non-conforming
-            # third-party adapters.
+            # Provider/network/decoding failure 属于 model stream contract 的一部分；
+            # Agent 仍会为不符合 contract 的 third-party adapter 保留一层防御性 catch。
             error = AgentMessage.assistant(
                 text,
                 tool_calls=self._tool_calls(tool_parts),

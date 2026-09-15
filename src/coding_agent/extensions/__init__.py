@@ -8,7 +8,7 @@ from .plan_mode import (
 )
 from .subagent import CHILD_MODEL_FACTORY_SERVICE, SubagentArgs, subagent_extension
 
-# Preserve the package's original default factory spelling for compatibility.
+# 为兼容现有用法，保留这个 package 原有的默认 factory 拼写。
 extension = permission_gate_extension
 
 __all__ = [

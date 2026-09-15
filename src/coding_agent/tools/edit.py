@@ -28,11 +28,10 @@ class EditArgs(BaseModel):
 
 
 def prepare_edit_arguments(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the shapes emitted by Chapter 12/tutorial-era models.
+    """标准化 Chapter 12/tutorial-era model 产生的参数 shape。
 
-    This function intentionally only changes the JSON shape.  Matching and
-    file validation remain in the Tool handler so they happen against one
-    original file snapshot.
+    这个函数只负责调整 JSON shape；matching 与 file validation 仍保留在 Tool handler 中，
+    从而确保它们基于同一个原始 file snapshot 执行。
     """
 
     normalized = dict(raw)
@@ -60,8 +59,8 @@ def prepare_edit_arguments(raw: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-# Descriptive alias for callers that want to exercise the normalization seam
-# directly; Tool itself uses the canonical ``prepare_edit_arguments`` name.
+# 描述性 alias，方便调用方直接测试 normalization seam；
+# Tool 自身仍使用规范名称 ``prepare_edit_arguments``。
 normalize_edit_arguments = prepare_edit_arguments
 
 
@@ -73,8 +72,8 @@ def _find_all(haystack: bytes, needle: bytes) -> list[int]:
         if position < 0:
             return positions
         positions.append(position)
-        # Advance by one byte so overlapping matches (for example ``aa`` in
-        # ``aaa``) are also treated as duplicates.
+        # 每次只前进一个 byte，这样重叠 match（例如 ``aaa`` 中的 ``aa``）
+        # 也会被视为 duplicate。
         start = position + 1
 
 
@@ -129,8 +128,8 @@ def create_edit_tool(cwd: str | Path) -> Tool[EditArgs]:
                 raise ValueError(f"Edit ranges overlap in {args.path!r}")
 
         updated_bytes = original_bytes
-        # Applying from the end keeps every range anchored to the original
-        # snapshot and makes the write atomic from the Tool's perspective.
+        # 从末尾开始应用修改，可以让每个 range 都继续锚定在原始 snapshot 上，
+        # 并从 Tool 的视角保证 write 是 atomic 的。
         for start, end, item in sorted(replacements, key=lambda entry: entry[0], reverse=True):
             updated_bytes = updated_bytes[:start] + item.new_text.encode("utf-8") + updated_bytes[end:]
 

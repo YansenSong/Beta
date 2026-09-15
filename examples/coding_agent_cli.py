@@ -1,4 +1,4 @@
-"""Interactive CLI harness for the product-layer Coding Agent."""
+"""产品层 Coding Agent 的交互式 CLI harness。"""
 
 from __future__ import annotations
 

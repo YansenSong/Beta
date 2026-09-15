@@ -32,7 +32,7 @@ class _PendingRegistrations:
     commands: list[RegisteredCommand] = field(default_factory=list)
 
 class ExtensionRunner:
-    """Stores extension registrations and composes them at existing Core seams."""
+    """保存 extension registration，并在现有 Core seam 上组合它们。"""
 
     def __init__(self, *, cwd: str | Path, config: RuntimeConfig, session) -> None:
         self.cwd = Path(cwd).resolve()

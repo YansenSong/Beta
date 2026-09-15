@@ -13,11 +13,11 @@ class SubagentArgs(BaseModel):
 
 
 def subagent_extension(api: ExtensionAPI) -> None:
-    """Register an opt-in subagent Tool for the Coding Agent product layer.
+    """为 Coding Agent 产品层注册一个 opt-in subagent Tool。
 
-    The child model is provided through ``RuntimeConfig.services`` under
-    ``child_model_factory``. The parent only receives the final child answer as
-    a normal ToolResult; the child's internal history stays isolated.
+    child model 通过 ``RuntimeConfig.services`` 中的 ``child_model_factory`` 提供。
+    parent 只会以普通 ToolResult 的形式接收 child 的最终回答；
+    child 的内部 history 始终保持隔离。
     """
 
     async def execute(args: SubagentArgs, ctx, tool_ctx) -> ToolResult:
@@ -56,7 +56,7 @@ def subagent_extension(api: ExtensionAPI) -> None:
     )
 
 
-# Conventional module-level factory name for directory-based extension loading.
+# 目录式 extension loader 约定使用的 module-level factory 名称。
 extension = subagent_extension
 
 __all__ = [

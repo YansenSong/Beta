@@ -16,10 +16,10 @@ async def compact_session(
     keep_last_messages: int = 8,
     estimate_tokens: Callable[[list[AgentMessage]], int] | None = None,
 ) -> SessionEntry | None:
-    """Append a branch-local compaction entry without deleting old history.
+    """追加一条 branch-local compaction Entry，而不删除旧 history。
 
-    The retained tail starts at a user message when possible, which avoids keeping
-    a tool result after its originating assistant/tool-call pair was summarized.
+    retained tail 会尽量从 user message 开始，从而避免在对应的
+    assistant/tool-call pair 已被摘要后，单独保留一个 tool result。
     """
 
     branch = session.get_branch()

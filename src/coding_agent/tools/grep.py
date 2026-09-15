@@ -83,8 +83,8 @@ def create_grep_tool(cwd: str | Path) -> Tool[GrepArgs]:
             try:
                 text = file_path.read_bytes().decode("utf-8")
             except UnicodeDecodeError:
-                # Grep is a source-search tool; silently skip binary/non-UTF-8
-                # files rather than returning corrupted model context.
+                # Grep 是 source-search Tool；binary/non-UTF-8 文件直接静默跳过，
+                # 避免把损坏的 model context 返回出去。
                 continue
             except OSError as exc:
                 raise OSError(f"Unable to read search file {str(file_path)!r}: {exc}") from exc

@@ -12,7 +12,7 @@ from .write_file import WriteFileArgs, create_write_file_tool
 
 
 def create_coding_tools(cwd: str | Path) -> list[Tool[Any]]:
-    """Create the stable Chapter 12 Coding Tool set for a workspace."""
+    """为 workspace 创建稳定的 Chapter 12 Coding Tool set。"""
 
     return [
         create_read_file_tool(cwd),

@@ -13,7 +13,7 @@ def wrap_registered_tool(registered: ExtensionTool[Any], runner) -> Tool[Any]:
             value = await value
         result = value if isinstance(value, ToolResult) else ToolResult(content=str(value))
         active_after = runner.get_active_tools()
-        # Match Pi's guard: if execution removed any previously active tool, suppress addedToolNames.
+        # 对齐 Pi 的 guard：如果执行移除了任何之前 active 的 Tool，就不要写入 addedToolNames。
         if all(name in active_after for name in active_before):
             before = set(active_before)
             added = [name for name in active_after if name not in before]

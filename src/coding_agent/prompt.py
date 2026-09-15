@@ -14,7 +14,7 @@ def build_coding_system_prompt(
     prefix: str | None = None,
     append: str | None = None,
 ) -> str:
-    """Assemble the product prompt from the workspace's actual capabilities."""
+    """根据 workspace 实际具备的 capability 组装产品层 prompt。"""
 
     workspace = Path(cwd).expanduser().resolve()
     sections: list[str] = []

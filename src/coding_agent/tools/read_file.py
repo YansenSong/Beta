@@ -74,8 +74,8 @@ def create_read_file_tool(cwd: str | Path) -> Tool[ReadFileArgs]:
 
         display_text = _truncate_utf8_prefix(selected_text, READ_MAX_BYTES)
         if byte_truncated:
-            # A byte limit can cut through a very long line.  Continuing at the
-            # same offset is the least surprising instruction in that case.
+            # byte limit 可能会从超长 line 的中间截断；这种情况下继续使用相同 offset，
+            # 是最不容易让人意外的 continuation instruction。
             continuation_offset = offset
             shown_line_count = len(display_text.splitlines())
             if shown_line_count:
@@ -84,9 +84,8 @@ def create_read_file_tool(cwd: str | Path) -> Tool[ReadFileArgs]:
             continuation_offset = selected_end + 1
 
         if truncated:
-            # Keep the continuation hint inside the byte budget as well.  The
-            # short loop also handles a file whose selected text is just below
-            # the limit but whose hint would otherwise push it over.
+            # continuation hint 也必须放在 byte budget 内；这个短 loop 还能处理一种边界情况：
+            # selected text 本身略低于限制，但加上 hint 后会超限。
             for _ in range(3):
                 separator = "" if not display_text or display_text.endswith(("\n", "\r")) else "\n"
                 hint = (
