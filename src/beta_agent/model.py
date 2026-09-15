@@ -22,7 +22,7 @@ class ModelAdapter(Protocol):
 
 
 class ScriptedModelAdapter:
-    """Deterministic adapter for tests and examples."""
+    """用于测试和示例的 deterministic adapter。"""
 
     def __init__(self, responses: Sequence[AgentMessage]):
         self._responses = deque(responses)
