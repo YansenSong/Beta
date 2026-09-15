@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 
 
 class CancellationToken:
-    """A cooperative cancellation signal used alongside task cancellation."""
+    """与 task cancellation 配合使用的协作式 cancellation 信号。"""
 
     def __init__(self) -> None:
         self._event = asyncio.Event()
@@ -17,8 +17,8 @@ class CancellationToken:
         return self._event.is_set()
 
     def cancel(self) -> None:
-        # Event.set() is idempotent; keeping cancel idempotent is part of the
-        # public contract so callers can safely race or repeat abort().
+        # Event.set() 是幂等的；让 cancel 保持幂等属于 public contract 的一部分，
+        # 因此调用方可以安全地竞争调用或重复调用 abort()。
         self._event.set()
 
     def throw_if_cancelled(self) -> None:
@@ -33,11 +33,10 @@ T = TypeVar("T")
 
 
 def accepts_cancellation(fn: Callable[..., Any]) -> bool:
-    """Return whether *fn* explicitly accepts the cancellation keyword.
+    """返回 *fn* 是否显式接受 cancellation keyword。
 
-    Signature inspection avoids the dangerous ``TypeError then retry`` pattern:
-    a TypeError raised inside a hook is a real hook failure, not evidence that
-    the hook has an old signature.
+    通过检查 Signature，避免危险的 ``TypeError then retry`` 模式：
+    hook 内部抛出的 TypeError 是真实的 hook failure，并不能说明 hook 使用的是旧 signature。
     """
 
     try:
@@ -59,7 +58,7 @@ async def call_with_optional_cancellation(
     *args: Any,
     cancellation: CancellationToken | None = None,
 ) -> T:
-    """Call first-party or legacy callbacks with a compatible signature."""
+    """使用兼容的 signature 调用 first-party 或 legacy callback。"""
 
     if cancellation is not None and accepts_cancellation(fn):
         value = fn(*args, cancellation=cancellation)
