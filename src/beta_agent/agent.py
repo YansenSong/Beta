@@ -87,7 +87,7 @@ class _MessageQueue:
 
 
 class Agent:
-    """Stateful agent runtime with cancellation and normalized lifecycle errors."""
+    """带 cancellation 和标准化 lifecycle error 的 stateful Agent Runtime。"""
 
     def __init__(
         self,
@@ -162,7 +162,7 @@ class Agent:
         active.stream.cancel()
 
     def _fail_from_bridge(self, exc: BaseException) -> None:
-        """Let an ExtensionHost structural failure use Agent's error lifecycle."""
+        """让 ExtensionHost 的 structural failure 复用 Agent 的 error lifecycle。"""
 
         info = _error_info("extension_bridge", exc)
         self._external_failure = info
@@ -474,8 +474,8 @@ class Agent:
                     )
                     return _AssistantResult(partial, error_info)
 
-            # A compliant adapter should always finish, but make an incomplete
-            # stream an ordinary model failure with a complete message lifecycle.
+            # 符合约定的 adapter 应始终正常结束；如果 stream 不完整，
+            # 就把它作为普通 model failure 处理，同时补齐完整的 message lifecycle。
             error = RuntimeError("Model stream ended without a final message")
             final = _model_error_message(partial or AgentMessage.assistant(""), str(error), type(error).__name__)
             if added_partial:
@@ -499,8 +499,8 @@ class Agent:
                 state.current_assistant = aborted
             raise
         except Exception as exc:
-            # Defensive boundary for third-party adapters that raise instead of
-            # yielding ModelEvent(type="error").
+            # 为会直接 raise、而不是 yield ModelEvent(type="error") 的 third-party adapter
+            # 保留一层 defensive boundary。
             final = _model_error_message(partial or AgentMessage.assistant(""), str(exc), type(exc).__name__)
             if added_partial:
                 self.context.messages[-1] = final
@@ -616,8 +616,8 @@ def _error_info(stage: ErrorStage, exc: BaseException) -> AgentErrorInfo:
 def _model_error_message(message: AgentMessage, error_message: str, error_type: Any) -> AgentMessage:
     metadata = dict(message.metadata)
     metadata.update({"error_message": error_message, "error_type": str(error_type or "RuntimeError")})
-    # An incomplete/error assistant stream must not leave provider-visible
-    # tool calls without matching Tool Results.
+    # 不完整/出错的 assistant stream 不能留下 provider-visible tool call，
+    # 否则它们会缺少对应的 Tool Result。
     return message.copy(stop_reason="error", tool_calls=[], metadata=metadata)
 
 
