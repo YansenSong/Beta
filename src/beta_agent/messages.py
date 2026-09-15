@@ -37,11 +37,10 @@ AgentContent = TextContent | ImageContent
 
 
 class ContentBlocks(list[AgentContent]):
-    """List of content blocks with a narrow string-compatibility surface.
+    """带有限 string compatibility surface 的 content block 列表。
 
-    New code should use ``AgentMessage.text`` for text.  The compatibility
-    methods let the pre-P0 examples continue to perform simple string checks
-    while ``content`` is now genuinely a list of blocks.
+    新代码处理文本时应使用 ``AgentMessage.text``。这些 compatibility method 让 pre-P0
+    示例仍可继续执行简单的 string check，同时 ``content`` 现在真正是一个 block 列表。
     """
 
     @property
@@ -182,5 +181,5 @@ class AgentMessage:
         return replace(self, **changes)
 
 
-# Backward compatibility alias. New runtime code should use AgentMessage.
+# 向后兼容别名；新的 runtime code 应使用 AgentMessage。
 Message = AgentMessage
