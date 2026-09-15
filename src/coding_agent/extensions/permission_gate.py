@@ -29,7 +29,7 @@ def permission_gate_extension(api: ExtensionAPI) -> None:
     api.on("tool_call", guard)
 
 
-# Keep the Chapter 11 extension factory spelling usable by existing examples.
+# 保留 Chapter 11 的 extension factory 拼写，兼容现有示例。
 extension = permission_gate_extension
 
 __all__ = ["DANGEROUS_PATTERNS", "extension", "is_dangerous_command", "permission_gate_extension"]
