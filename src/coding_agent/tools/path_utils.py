@@ -4,11 +4,10 @@ from pathlib import Path
 
 
 def resolve_tool_path(cwd: str | Path, path: str) -> Path:
-    """Resolve a Coding Tool path relative to ``cwd``.
+    """相对于 ``cwd`` 解析 Coding Tool path。
 
-    This helper deliberately only defines path resolution.  It does not provide
-    containment, trust, or sandbox guarantees; those policies belong to a
-    separate product/runtime boundary.
+    这个 helper 有意只定义 path resolution，不提供 containment、trust 或 sandbox guarantee；
+    这些 policy 应属于独立的 product/runtime boundary。
     """
 
     if not isinstance(path, str):
@@ -21,6 +20,6 @@ def resolve_tool_path(cwd: str | Path, path: str) -> Path:
             candidate = base / candidate
         return candidate.resolve()
     except (OSError, RuntimeError) as exc:
-        # Keep the user-supplied spelling in the diagnostic so a model can
-        # correct a bad path instead of only seeing a normalized path.
+        # diagnostic 中保留用户输入的原始拼写，便于 model 修正错误 path，
+        # 而不是只能看到 normalized path。
         raise ValueError(f"Unable to resolve tool path {path!r}: {exc}") from exc
