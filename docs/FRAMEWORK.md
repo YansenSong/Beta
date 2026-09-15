@@ -495,13 +495,14 @@ Coding Agent CLI 默认加载 Plan Mode 与 Subagent，并为 child agent 提供
 
 ---
 
-## 14. 教程 00～12 与源码对应
+## 14. 教程 00～12（含 02A 补充章）与源码对应
 
 | Chapter | 主题 | 主要落点 |
 | --- | --- | --- |
 | 00 | Model Boundary | `src/beta_agent/types.py`、`model.py`、`adapters/` |
 | 01 | Tool-driven Loop | `src/beta_agent/agent.py`、`tools.py` |
 | 02 | Agent Runtime / Events | `src/beta_agent/events.py`、`agent.py` |
+| 02A | Cancellation / Abort | `src/beta_agent/cancellation.py`、`events.py`、`agent.py`、`model.py`、`tools.py` |
 | 03 | Tool Runtime | `src/beta_agent/tools.py` |
 | 04 | Parallel Tools | `src/beta_agent/tools.py` |
 | 05 | Steering / Follow-up | `src/beta_agent/agent.py` |

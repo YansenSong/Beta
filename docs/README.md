@@ -7,7 +7,7 @@
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md)：先看系统边界、数据流和几个必须保持稳定的不变量；
 2. [`FRAMEWORK.md`](FRAMEWORK.md)：再看每个模块为什么存在、彼此如何协作；
 3. [`EXTENSIONS.md`](EXTENSIONS.md)：理解 Chapter 10～11 新加入的 Extension Runtime，以及如何写和组合 Extension；
-4. [`tutorials/`](tutorials/)：按 Chapter 00～12 的顺序重新走一遍框架演进过程。
+4. [`tutorials/`](tutorials/)：按 Chapter 00～12 的顺序重新走一遍框架演进过程，并阅读 02 和 03 之间的 `02A` Cancellation 补充章。
 
 ## 当前文档覆盖范围
 
@@ -17,6 +17,7 @@
 00  Model Boundary
 01  Tool-driven Loop
 02  Agent Runtime / Events
+02A Cancellation / Abort
 03  Tool Runtime
 04  Parallel Tools
 05  Steering / Follow-up
@@ -38,7 +39,7 @@ Chapter 12 已实现 Coding Agent Assembly 产品层。
 | `ARCHITECTURE.md` | 系统边界和稳定 invariant 是什么 | `src/beta_agent/` Core + `src/coding_agent/` 产品层 |
 | `FRAMEWORK.md` | 当前框架各模块如何协作 | `agent.py`、`tools.py`、`session.py`、`extensions/` |
 | `EXTENSIONS.md` | 如何编写、加载和组合 Extension | `src/beta_agent/extensions/`、`src/coding_agent/extensions/` |
-| `tutorials/00～12` | 为什么框架一步步长成现在这样 | 每章对应的源码和测试 |
+| `tutorials/00～12 + 02A` | 为什么框架一步步长成现在这样 | 每章对应的源码和测试 |
 
 ## 当前架构主线
 

@@ -1,6 +1,6 @@
 # Beta Agent 教学文档
 
-这组文档参考 `learn-pi-agent` Chapter 00～12 的教学递进，并结合 Beta 当前 Python 实现重新组织。
+这组文档参考 `learn-pi-agent` Chapter 00～12 的教学递进，并结合 Beta 当前 Python 实现重新组织。第 02 章和第 03 章之间额外插入了 `02A` Cancellation 补充章，用来解释 Runtime 的中止路径。
 
 它们不是原教程的逐句翻译，也不是另一套独立 demo Runtime。目标是直接围绕当前仓库理解：一个最小 Agent Framework 为什么会逐步长出 Message、Agent Loop、Event Stream、Tool Runtime、并行执行、Steering / Follow-up、Context、Session、Compaction、Skills，以及最终的 Extension Runtime 与 Extension Composition。
 
@@ -11,6 +11,7 @@
 | [00](00-model-boundary.md) | 模型边界与内部 Message | `types.py`、`model.py`、`adapters/` |
 | [01](01-tool-driven-loop.md) | Tool-driven Agent Loop | `agent.py`、`tools.py` |
 | [02](02-agent-runtime-events.md) | Agent Runtime 与事件流 | `events.py`、`agent.py` |
+| [02A](02a-cancellation.md) | 用户点击“停止”之后发生了什么 | `cancellation.py`、`events.py`、`agent.py`、`model.py`、`tools.py` |
 | [03](03-tool-runtime.md) | Tool Runtime 生命周期 | `tools.py` |
 | [04](04-parallel-tools.md) | 并行 Tool 与两种顺序 | `tools.py` |
 | [05](05-steering-followup.md) | Steering / Follow-up | `agent.py` |
@@ -74,13 +75,13 @@ Chapter 11 的三个组合案例现在已经是 `coding_agent.extensions` 的正
 
 - [`../README.md`](../README.md)：`docs/` 总入口；
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md)：系统分层、数据流和稳定 invariant；
-- [`../FRAMEWORK.md`](../FRAMEWORK.md)：当前 00～12 完整框架说明；
+- [`../FRAMEWORK.md`](../FRAMEWORK.md)：当前 00～12（含 02A 补充章）完整框架说明；
 - [`../EXTENSIONS.md`](../EXTENSIONS.md)：Extension API、Runner、Host、Tool、Command 的使用与约束；
-- 本目录：按“问题逐步出现”的顺序解释为什么形成这些模块。
+- 本目录：按“问题逐步出现”的顺序解释为什么形成这些模块；`02A` 是位于事件流和 Tool Runtime 之间的取消机制补充章。
 
 ## 当前范围
 
-目前覆盖 Chapter 00～12。
+目前覆盖 Chapter 00～12，并包含位于 02 和 03 之间的 `02A` 补充章。
 
 Chapter 12 进入 Coding Agent Assembly：
 
