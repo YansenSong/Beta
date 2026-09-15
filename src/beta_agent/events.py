@@ -11,7 +11,7 @@ _SENTINEL = object()
 
 
 class EventStream(Generic[T]):
-    """Async event iterator with an awaitable final result."""
+    """支持 await 最终结果的 async event iterator。"""
 
     def __init__(
         self,
@@ -70,12 +70,11 @@ class EventStream(Generic[T]):
         self._cancel_requested = True
         if self._on_cancel is not None:
             self._on_cancel(self)
-        # A task cancelled before its first scheduling turn never enters the
-        # coroutine body.  Let it start in that edge case so Agent's token can
-        # produce a domain-level aborted lifecycle instead of a hanging stream.
-        # A generic EventStream without an on_cancel coordinator can be safely
-        # cancelled immediately; Agent/Host streams use the coordinator to let
-        # their domain layer finalize an aborted lifecycle first.
+        # 如果 task 在第一次获得调度前就被取消，它不会进入 coroutine body。
+        # 这个边界情况下先让它启动，使 Agent 的 token 能产出 domain-level aborted lifecycle，
+        # 而不是留下一个一直挂起的 stream。
+        # 对没有 on_cancel coordinator 的通用 EventStream，可以立即安全取消；
+        # Agent/Host stream 则通过 coordinator，让 domain layer 先完成 aborted lifecycle 的收尾。
         if not self._task.done() and (self._started or self._on_cancel is None):
             self._task.cancel()
 
@@ -94,11 +93,11 @@ class EventStream(Generic[T]):
         runner: Callable[[Callable[[AgentEvent], Awaitable[None]]], Awaitable[T]],
     ) -> T:
         self._started = True
+
         async def emit(event: AgentEvent) -> None:
             await self._queue.put(event)
-            # Give wrapper layers (for example ExtensionHost) a chance to
-            # observe each event and cancel the producer before it continues
-            # through the rest of a lifecycle in the same event-loop turn.
+            # 给 wrapper layer（例如 ExtensionHost）一个机会观察每个 event，
+            # 并在 producer 继续执行同一个 event-loop turn 中剩余 lifecycle 之前取消它。
             await asyncio.sleep(0)
 
         try:
@@ -123,6 +122,6 @@ class EventStream(Generic[T]):
         try:
             await self._task
         except asyncio.CancelledError:
-            # EventStream is generic; it does not infer Agent domain status.
-            # Agent itself catches cancellation and normally returns a result.
+            # EventStream 是通用组件，不会自行推断 Agent domain status。
+            # Agent 本身会捕获 cancellation，并且通常返回一个结果。
             pass
