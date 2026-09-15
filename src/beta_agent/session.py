@@ -21,7 +21,7 @@ class SessionEntry:
 
 
 class SessionTree:
-    """Append-only branchable session history."""
+    """Append-only、可分支的 session history。"""
 
     def __init__(self, entries: Iterable[SessionEntry] = (), leaf_id: str | None = None) -> None:
         self.entries = list(entries)
@@ -165,14 +165,14 @@ def _content_to_json(message: AgentMessage) -> list[dict[str, Any]]:
             if block.media_type is not None:
                 item["media_type"] = block.media_type
             blocks.append(item)
-        else:  # pragma: no cover - AgentMessage validates known block types.
+        else:  # pragma: no cover - AgentMessage 会校验已知的 block type。
             raise TypeError(f"Unsupported content block: {block!r}")
     return blocks
 
 
 def _content_from_json(value: Any) -> list[TextContent | ImageContent]:
     if isinstance(value, str):
-        # v1 sessions used a plain content string.
+        # v1 session 使用纯 content string。
         return [TextContent(value)]
     if value is None:
         return []
