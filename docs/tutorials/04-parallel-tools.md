@@ -130,6 +130,25 @@ Beta 支持：
 
 “停止后续 Loop”和“中止当前并发任务”是两种不同机制。后者更接近 cancellation / abort 语义。
 
+### 并行分支的索引为什么不能丢
+
+源码先创建与调用数等长的槽位：
+
+```python
+entries: list[_Finalized | _Prepared | None] = [None] * len(calls)
+```
+
+preflight 按 `enumerate(calls)` 写回对应槽位；只有 `_Prepared` 会被转成 task，并以原索引作为 key：
+
+```python
+tasks[index] = asyncio.create_task(run(index, entry))
+results = await asyncio.gather(*tasks.values())
+for index, item in zip(tasks, results):
+    entries[index] = item
+```
+
+`run()` 内部一完成就发 `tool_execution_end`，所以事件是 completion order；`gather()` 返回值与传入 awaitable 同序，再借 `index` 写回 `entries`，所以 `_commit()` 得到 source order。准备失败的 `_Finalized` 从未离开原槽位，也就不会因“没有 task”而消失。
+
 ## 7. 掌握标准
 
 你应该能回答：

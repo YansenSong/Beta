@@ -123,6 +123,25 @@ Beta 只有在这一批 finalized result 都要求 terminate 时，才把整个 
 
 这样单个 Tool 不会越权决定其他同批调用是否应该消失。
 
+### 顺着一个 Tool Call 走完源码
+
+一个 [`Tool`](../../src/beta_agent/tools.py) 用 `args_model` 声明输入，用 handler 声明行为：
+
+```python
+@dataclass(slots=True)
+class Tool(Generic[ArgsT]):
+    name: str
+    description: str
+    args_model: type[ArgsT]
+    handler: ToolHandler[ArgsT]
+    execution_mode: Literal["parallel", "sequential"] = "parallel"
+    prepare_arguments: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+```
+
+`_prepare()` 的真实顺序是 lookup → `prepare_arguments` → Pydantic `model_validate` → `before_tool_call`。其中任何一步失败都会返回 `_Finalized`，而不是让 handler 接到半可信参数。准备成功后 `_execute_prepared()` 才创建 `ToolExecutionContext` 并调用 `tool.execute()`。
+
+最后 `_commit()` 把内部 `_Finalized` 转成公开协议消息：`result.content` 成为 Tool Message 文本，`details`、`terminate`、`aborted` 放进 metadata，`is_error` 保留失败语义。也就是说 `_Prepared` / `_Finalized` 只活在 Runtime 内部，Agent Loop 只接触 `ToolBatchResult`。
+
 ## 8. 掌握标准
 
 你应该能解释：

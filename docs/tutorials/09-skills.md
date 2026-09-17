@@ -166,6 +166,22 @@ Skill Catalog 表示的是：
 
 Skill 之所以重要，不只是因为它能放 Markdown，而是因为它证明了：领域能力可以通过 Prompt + Tool + Message 的既有机制接入，而不必让 Agent Loop 认识每一种业务。
 
+### Catalog 实际读取了什么
+
+[`SkillCatalog.discover()`](../../src/beta_agent/skills.py) 使用 `root.glob("**/SKILL.md")` 找文件，但启动阶段虽然调用了 `read_text()`，只把内容交给 `_parse_frontmatter()`；最终对象只保留：
+
+```python
+@dataclass(frozen=True, slots=True)
+class Skill:
+    name: str
+    description: str
+    location: Path
+```
+
+`prompt_fragment()` 再把这三个字段转成 `<available_skills>` XML，并用 `xml.sax.saxutils.escape()` 处理元数据，避免名称或描述破坏标签结构。正文没有进入返回字符串。
+
+当前仓库也没有 Core 专用的 `builtin_tools.py`。产品层 Coding Agent 把 [`create_read_file_tool()`](../../src/coding_agent/tools/read_file.py) 注册成普通 Tool；模型从 catalog 得到 location 后，再以普通 Tool Call 读取 `SKILL.md`。因此“按需加载”不是隐藏的 Skill Runtime API，而是一次可观察、可持久化的标准 Tool 往返。
+
 ## 9. 掌握标准
 
 你应该能回答：

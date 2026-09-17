@@ -162,6 +162,23 @@ Compaction 改变 Session 到 canonical messages 的长期重建语义。
 - `SessionTree.append_compaction()`：Compaction 怎样进入树；
 - `SessionTree.reconstruct_messages()`：summary 怎样替代旧前缀。
 
+### cut point 与 reconstruction 的具体实现
+
+[`compact_session()`](../../src/beta_agent/compaction.py) 先收集当前 branch 中的 message Entry，从尾部倒推希望保留的数量，再继续向前寻找 user message：
+
+```python
+target_pos = max(0, len(message_entries) - keep_last_messages)
+while target_pos > 0:
+    candidate = message_entries[target_pos][1]
+    if candidate.payload.get("role") == "user":
+        break
+    target_pos -= 1
+```
+
+它只把切点之前的 `prefix_messages` 交给 summarizer，并把摘要、`first_kept_entry_id`、`tokens_before` 追加为 compaction Entry。原 message Entry 一条都不删。
+
+重建时 `SessionTree.reconstruct_messages()` 只看 active branch 上最后一条 compaction，先注入一条带 `compaction_entry_id` metadata 的 system summary，再从 `first_kept_entry_id` 起恢复原消息。如果该 id 在 branch 中找不到，代码会回退到完整消息，而不是用损坏的摘要默默丢历史。
+
 ## 9. 掌握标准
 
 你应该能回答：

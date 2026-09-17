@@ -165,6 +165,27 @@ Session 回答“我们当前在哪条历史路径上”。
 
 Context Transformation 回答“这条路径里本轮模型看哪些内容”。
 
+### 从 Entry 指针重建 active branch
+
+`SessionTree._append()` 从不寻找或修改 children，只把当前 `leaf_id` 写成新节点的 `parent_id`，然后移动 leaf：
+
+```python
+entry = SessionEntry(
+    id=uuid.uuid4().hex,
+    parent_id=self.leaf_id,
+    timestamp=utc_now_iso(),
+    type=type_,
+    payload=payload,
+)
+self.entries.append(entry)
+self.by_id[entry.id] = entry
+self.leaf_id = entry.id
+```
+
+`branch(entry_id)` 也只校验 id 后移动 `leaf_id`。`get_branch()` 再从 leaf 沿 `parent_id` 向上查 `by_id`，最后 `reverse()` 得到模型需要的时间正序。于是 `entries` 是完整 append-only 存储，`leaf_id` 是当前视角，`get_branch()` 的返回值才是线性 active path。
+
+持久化时每个 Entry 占一行 JSON，最后另写一条 `_meta` 保存 `leaf_id` 和格式版本。加载 v1/v2 消息时 `_content_from_json()` 还兼容旧的纯字符串 content，这说明 Session 的磁盘 schema 也是需要维护的边界。
+
 ## 8. 掌握标准
 
 你应该能回答：

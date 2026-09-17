@@ -93,6 +93,39 @@ Tool Calling 正是这个分界点。
 
 阅读时注意：`Agent` 本身不应该出现大量 Provider 字段名。
 
+### 沿一次真实转换读源码
+
+`AgentMessage` 不只是 `role + string`。它还保存 Runtime 需要的停止原因、错误标记、时间戳和 metadata；文本和图片则统一放在 content block 中：
+
+```python
+@dataclass(slots=True)
+class AgentMessage:
+    role: Role
+    content: ContentBlocks = field(default_factory=ContentBlocks)
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_call_id: str | None = None
+    stop_reason: StopReason | None = None
+    is_error: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: str = field(default_factory=utc_now_iso)
+```
+
+真正越过模型边界时，[`default_convert_to_llm()`](../../src/beta_agent/provider_messages.py) 会逐条复制 Provider 需要的字段，并跳过 `role="custom"`。因此 `timestamp`、`metadata`、`stop_reason` 和 `is_error` 不会泄漏给 Provider：
+
+```python
+if message.role not in {"system", "user", "assistant", "tool"}:
+    continue
+converted.append(ProviderMessage(
+    role=message.role,
+    content=_convert_content(message),
+    tool_calls=list(message.tool_calls),
+    tool_call_id=message.tool_call_id,
+    name=message.name,
+))
+```
+
+最后看 [`ModelAdapter.stream()`](../../src/beta_agent/model.py)：它接收的已经是 `Sequence[ProviderMessage]`，输出则重新回到 Runtime 的 `ModelEvent`。这两个类型正好标出了边界的两侧。
+
 ## 6. 掌握标准
 
 你应该能回答：

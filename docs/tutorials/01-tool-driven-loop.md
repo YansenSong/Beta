@@ -106,6 +106,31 @@ Loop 只提供“反馈继续发生”的机制，不负责预先编排所有步
 - `ToolRuntime.execute_batch()`：Tool Result 从哪里回来；
 - `self.context.messages.extend(tool_results)`：结果怎样进入下一次模型输入的历史来源。
 
+### 把循环落实到 `_run_impl()`
+
+主循环收到 Assistant 后，先执行整批 Tool，再把结果同时写入长期 context 和本次返回值：
+
+```python
+batch = await tool_runtime.execute_batch(
+    context=self.context,
+    calls=assistant.tool_calls,
+    emit=emit,
+    cancellation=cancellation,
+)
+tool_results = batch.messages
+self.context.messages.extend(tool_results)
+state.new_messages.extend(tool_results)
+has_more_tool_calls = not batch.terminate and not batch.aborted
+```
+
+这里的 `has_more_tool_calls` 决定内层循环是否再次调用模型。注意 Assistant 本身更早已由 `_stream_assistant()` 放进 `context.messages`，所以第二次模型调用看到的顺序是：
+
+```text
+... → assistant(tool_calls=[...]) → tool result(s) → 下一次 LLM
+```
+
+这也解释了为何 Tool 异常不能直接穿透循环：`ToolRuntime._execute_prepared()` 会先把异常整理成带错误标记的 `_Finalized`，随后 `_commit()` 生成 `AgentMessage.tool_result(..., is_error=True)`。协议链仍然完整，模型才能读到失败并修正下一步。
+
 ## 6. 掌握标准
 
 你应该能解释：

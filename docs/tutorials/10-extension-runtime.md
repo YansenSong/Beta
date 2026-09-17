@@ -61,3 +61,24 @@ Extension Tool 在作者视角多拿一个 `ExtensionContext`，但注册后会�
 - `src/beta_agent/extensions/loader.py`
 - `src/beta_agent/extensions/bridge.py`
 - `tests/test_extension_runtime.py`
+
+## 沿注册、绑定、运行读一遍
+
+Extension factory 并不直接改 Agent。`ExtensionRunner.load()` 为每个 factory 创建独立的 `_PendingRegistrations`；只有 factory 完整执行成功，才把 handlers、tools、commands 合并到 Runner。抛异常时 pending 内容全部丢弃，这就是“原子加载”的具体实现。
+
+绑定发生在 [`bind_extensions()`](../../src/beta_agent/extensions/bridge.py)。它先把 Core Tool 与 Extension Tool 建成 `universe`，再把已有 hook 与 Extension hook 串起来：
+
+```python
+async def before_tool_call(call, args, context, cancellation=None):
+    if previous_before:
+        decision = await call_with_optional_cancellation(...)
+        if decision and decision.block:
+            return decision
+    verdict = await runner.emit_tool_call(...)
+    if verdict and verdict.block:
+        return BeforeToolCallDecision(...)
+```
+
+Context handler 则是管道语义：`ExtensionRunner.emit_context()` 把前一个 handler 的返回值作为后一个 handler 的输入；普通 lifecycle `emit()` 会依次调用全部 handler；`emit_tool_call()` 遇到第一个 block 立即返回。三类组合语义由三个不同方法直接表达，而不是藏在通用 EventEmitter 中。
+
+Extension Tool 经 [`wrap_registered_tool()`](../../src/beta_agent/extensions/wrapper.py) 变成普通 `Tool`。wrapper 在调用前后比较 active tool names，并把新增项写进 `ToolResult.added_tool_names`；之后仍由 `ToolRuntime` 负责校验、执行和提交。

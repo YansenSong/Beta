@@ -88,6 +88,27 @@ Assistant Message 不是只看有没有 Tool Call。
 
 Beta 会把这种截断调用变成失败的 Tool Result，而不是冒险运行不完整参数。
 
+### EventStream 和 Assistant partial 如何衔接
+
+[`EventStream`](../../src/beta_agent/events.py) 内部是一条 `asyncio.Queue` 加一个 runner task。`emit()` 入队后主动 `await asyncio.sleep(0)`，让 UI 或 Extension 有机会在 producer 继续推进前观察事件：
+
+```python
+async def emit(event: AgentEvent) -> None:
+    await self._queue.put(event)
+    await asyncio.sleep(0)
+```
+
+在 [`Agent._stream_assistant()`](../../src/beta_agent/agent.py) 中，`ModelEvent.partial` 每次都替换当前 Assistant，并发出副本：
+
+```python
+state.current_assistant = partial
+if added_partial:
+    self.context.messages[-1] = partial
+await emit(AgentEvent(type="message_update", message=partial.copy()))
+```
+
+因此 queue 负责“把变化送出去”，`context.messages[-1]` 负责“Runtime 当前认为什么是真的”。最终 `done` partial 会成为 history 中的完整 Assistant，而消费者无需自行拼 token delta。
+
 ## 6. 掌握标准
 
 你应该能回答：

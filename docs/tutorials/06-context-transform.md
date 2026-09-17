@@ -142,6 +142,32 @@ Beta 在 `Agent._run()` 的 turn 边界调用 `prepare_next_turn`。
 
 如果一开始把两者绑死，后续每一种 Context 策略都会开始直接修改历史结构。
 
+### `_stream_assistant()` 中的三份数据
+
+源码明确保留了三层表示：
+
+```python
+runtime_messages = list(self.context.messages)
+if self.config.transform_context:
+    runtime_messages = await self._call(
+        self.config.transform_context,
+        list(runtime_messages),
+        cancellation=cancellation,
+    )
+converted_messages = await self._call(
+    self.config.convert_to_llm,
+    list(runtime_messages),
+    cancellation=cancellation,
+)
+provider_messages = list(converted_messages)
+```
+
+- `self.context.messages` 是 canonical Runtime history；
+- `runtime_messages` 是本轮经过裁剪、补充或过滤的 `AgentMessage` view；
+- `provider_messages` 是去掉 Runtime-only 字段后的 Provider DTO。
+
+Hook 收到的是 `list(self.context.messages)` 的浅拷贝，因此简单的增删列表项不会直接改写 canonical list。相反，`prepare_next_turn(previous_turn)` 可以返回新的 `AgentContext`，主循环会执行 `self.context = next_context`；这正是“临时视图”和“改变后续状态”的源码差异。
+
 ## 7. 掌握标准
 
 你应该能回答：

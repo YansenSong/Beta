@@ -162,3 +162,33 @@ permission block
 ```
 
 Chapter 12 的关键结论是：00～11 提供稳定能力，12 负责产品组装；Agent Loop、ToolRuntime、SessionTree 都不需要认识“Bug Fix workflow”、Plan Mode 或 Subagent。
+
+## 9. 从 `create_coding_agent()` 看完整装配顺序
+
+[`create_coding_agent()`](../../src/coding_agent/assembly.py) 是最适合串起全仓源码的入口，其顺序固定为：
+
+```text
+解析 cwd
+→ create_coding_tools(cwd) + extra_tools
+→ discover skills
+→ load/reconstruct SessionTree
+→ 构造 RuntimeConfig.services
+→ ExtensionRunner.load()
+→ build_coding_system_prompt()
+→ Agent(..., messages=initial_messages)
+→ bind_extensions()
+→ CodingAgentRuntime facade
+```
+
+其中 `RuntimeConfig.services` 保存 `cwd`、skills、tools、model，以及可选的 `child_model_factory`，让 Extension 获得产品服务而不反向依赖 assembly。`_check_unique_tools()` 会在绑定前拒绝产品 Tool、extra Tool、Extension Tool 的重名。
+
+Facade 的 `run()` / `stream()` 始终走 `ExtensionHost`，不是裸 `Agent`，这样 message persistence 和 Extension lifecycle 不会被绕过：
+
+```python
+async def run(self, prompt: str):
+    return await self.host.run(prompt)
+```
+
+保存时也不再重复遍历 `agent.messages`；`ExtensionHost._handle_event()` 已在每个 `message_end` 调用 `session.append_message()`。`save_session()` 只负责可选 compaction、用重建结果替换 Agent 工作 context，以及写 JSONL。这一细节避免同一消息被持久化两次。
+
+五个 Coding Tool 则展示了 Core `Tool` 抽象怎样落到真实文件系统：`read_file` / `grep` 可并行，`bash` / `write_file` / `edit` 声明为 sequential；`edit` 先在同一原始 byte snapshot 上验证所有 oldText 唯一且互不重叠，再从后向前应用替换，从而保证一批 edit 不因前一项改变偏移量。

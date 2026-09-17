@@ -135,6 +135,30 @@ Steering 与 Follow-up 的 payload 可以完全一样，区别不在数据结构
 = 不同运行语义
 ```
 
+### 两条队列在源码中的消费点
+
+`steer()` 和 `follow_up()` 都构造 user message，但 metadata 会留下投递方式：
+
+```python
+def steer(self, text: str) -> None:
+    self._steering.push(AgentMessage.user(text, delivery="steering"))
+
+def follow_up(self, text: str) -> None:
+    self._follow_up.push(AgentMessage.user(text, delivery="follow_up"))
+```
+
+内层循环在一个 turn 结束、下一 turn 开始前调用 `_drain_steering()`；取到的消息进入 `pending`，随后追加到 `context.messages`。只有当内层循环准备退出时，外层循环才执行：
+
+```python
+follow_up = await self._drain_follow_up(cancellation)
+if follow_up:
+    pending = follow_up
+    continue
+break
+```
+
+`_MessageQueue.drain()` 会先复制再清空 deque，所以一条消息只进入一次 checkpoint。若配置了外部 `get_steering_messages` / `get_follow_up_messages`，两个 drain 方法会改为调用 provider，但循环位置完全不变。
+
 ## 7. 掌握标准
 
 你应该能解释：
