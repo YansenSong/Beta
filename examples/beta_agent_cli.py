@@ -1,4 +1,4 @@
-"""DeepSeek CLI 多轮对话测试。
+"""beta_agent CLI 多轮对话测试。
 
 使用方式：
     1. 在项目根目录创建 .env：
@@ -10,7 +10,7 @@
        pip install -e .
 
     3. 启动：
-       python examples/deepseek_cli.py
+       python examples/beta_agent_cli.py
 
 这个文件直接通过本地 Python 方式调用 Beta Agent，不经过 HTTP 服务或额外客户端层。
 """
