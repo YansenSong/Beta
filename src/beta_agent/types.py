@@ -76,6 +76,7 @@ class TurnResult:
     message: AgentMessage
     tool_results: list[AgentMessage]
     context: AgentContext
+    # # 本次 Agent run 开始后，截至当前 turn 累计新增的消息
     new_messages: list[AgentMessage]
 
 

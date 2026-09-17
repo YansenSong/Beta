@@ -53,7 +53,7 @@ def accepts_cancellation(fn: Callable[..., Any]) -> bool:
         parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
     )
 
-
+# 调用一个可能支持、也可能不支持cancellation 参数的函数（调用函数的）
 async def call_with_optional_cancellation(
     fn: Callable[..., T | Awaitable[T]],
     *args: Any,

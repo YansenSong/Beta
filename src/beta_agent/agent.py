@@ -29,14 +29,31 @@ ConvertToLlm = Callable[
 class AgentConfig:
     # 这些 Hook 负责“策略”，Agent Loop 只负责稳定的运行时控制流。
     # 这样后续增加上下文裁剪、权限判断等能力时，不需要不断改写主循环。
+    # 工具批次的默认执行方式：并行执行，或按照模型给出的顺序依次执行。
     tool_execution: Literal["parallel", "sequential"] = "parallel"
+
+    # 可选 Hook，用来在调用模型之前，修改“本轮模型能看到的消息”。
     transform_context: TransformContext | None = None
+
+    # 将 Runtime 使用的 AgentMessage 转换为模型适配层使用的 ProviderMessage。
     convert_to_llm: ConvertToLlm = default_convert_to_llm
+
+    # 可选 Hook，在上一轮结束、下一轮开始前，根据 TurnResult 调整 AgentContext。
     prepare_next_turn: PrepareNextTurn | None = None
+
+    # 可选 Hook，在每个 turn 完整结束后，判断是否立即结束当前 Agent run。
     should_stop_after_turn: ShouldStopAfterTurn | None = None
+
+    # 可选消息提供器，在 turn 之间读取 Steering 消息，使其参与下一次模型调用。
     get_steering_messages: MessageProvider | None = None
+
+    # 可选消息提供器，仅在 Agent 原本准备结束时读取 Follow-up 消息并继续运行。
     get_follow_up_messages: MessageProvider | None = None
+
+    # 可选 Hook，在工具参数准备和校验完成后、真正执行前进行权限或策略判断。
     before_tool_call: BeforeToolCall | None = None
+
+    # 可选 Hook，在工具执行完成后、结果事件发出前修改结果、错误状态或终止标记。
     after_tool_call: AfterToolCall | None = None
 
 
@@ -129,18 +146,41 @@ class Agent:
     def follow_up(self, text: str) -> None:
         self._follow_up.push(AgentMessage.user(text, delivery="follow_up"))
 
+    # 启动一次Agent运行，返回一个 EventStream，stream 里会 yield AgentEvent。
+    # 这个 stream 里会 yield AgentEvent，直到 run 完成或被取消
     def stream(self, prompt: str | AgentMessage | Sequence[AgentMessage]) -> EventStream[list[AgentMessage]]:
-        self._ensure_idle()
+        # 确认 Agent 当前没有正在执行另一个run，如果已有未完成的 run，会抛出异常，
+        # 防止同一个有状态 Agent 被两个主流程同时修改。
+        self._ensure_idle() 
+
+        # 把三种输入格式统一转换为：list[AgentMessage]
+        # 例如："你好"会变成类似[AgentMessage.user("你好")]
         prompts = self._normalize_prompts(prompt)
+
+        # 为这一次运行创建独立的取消令牌。后续模型请求、工具执行和各类 Hook 都会共享它。
+        # 调用 agent.abort() 或取消事件流时，这个令牌会进入 cancelled 状态。
         token = CancellationToken()
+
+        # 清除上一次运行遗留的错误状态。
         self._last_error = None
         self._external_failure = None
+
+        # EventStream 启动后台异步任务后，会把自己的 emit 函数传进来。
+        # 相当于执行：await self._run(prompts, emit, token)
         stream = EventStream(
+            # prompts 是规范化后的用户消息;emit 用于向事件队列发送 AgentEvent；token 用于传播取消信号
+            # _run() 中执行类似下面的操作：await emit(AgentEvent(type="agent_start"));await emit(AgentEvent(type="message_update", ...))
             lambda emit: self._run(prompts, emit, token),
+            # 当外部取消 EventStream 时，同时设置 Agent 的取消令牌，让模型、工具和Hook 都能感知取消，而不只是取消最外层事件消费者。
             on_cancel=lambda _: token.cancel(),
         )
+
+        # 记录当前正在运行的任务。这个状态主要用于：is_running 查询；阻止重入；agent.abort()等
         self._active_run = _ActiveRun(token=token, stream=stream)
+
+        # 当 stream 完成时，清理 _active_run 状态。
         stream.add_done_callback(lambda completed: self._clear_active_run(completed))
+
         return stream
 
     async def run(self, prompt: str | AgentMessage | Sequence[AgentMessage]) -> list[AgentMessage]:
@@ -204,6 +244,8 @@ class Agent:
             return [prompt]
         return list(prompt)
 
+    # 检查被调用函数是否接受 cancellation 参数，接受才传入。
+    # 同时兼容同步函数和异步函数，并统一用 await 返回结果。
     async def _call(self, fn: Callable[..., Any], *args: Any, cancellation: CancellationToken | None = None) -> Any:
         return await call_with_optional_cancellation(fn, *args, cancellation=cancellation)
 
@@ -261,6 +303,9 @@ class Agent:
 
         self.context.messages.extend(prompts)
         state.turn_started = True
+
+        # 一次turn是只包含一轮模型的调用（看到消息-工具调用-工具返回结果）
+        # 工具返回结果-模型回复为新的turn。一个run中可能包含多个turn
         await emit(AgentEvent(type="turn_start"))
         for message in prompts:
             cancellation.throw_if_cancelled()
@@ -277,6 +322,8 @@ class Agent:
         while True:
             has_more_tool_calls = True
             while has_more_tool_calls or pending:
+
+                # 如果上一轮有结果，且配置了 prepare_next_turn Hook，则在下一轮开始前调用它。
                 if previous_turn is not None:
                     if self.config.prepare_next_turn:
                         cancellation.throw_if_cancelled()
