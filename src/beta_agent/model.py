@@ -7,6 +7,7 @@ from typing import Protocol
 
 from .cancellation import CancellationToken
 from .provider_messages import ProviderMessage
+from .provider_policy import ProviderRequestOptions
 from .types import AgentMessage, Message, ModelEvent
 
 
@@ -17,6 +18,7 @@ class ModelAdapter(Protocol):
         system_prompt: str,
         messages: Sequence[ProviderMessage],
         tools: Sequence[object],
+        request_options: ProviderRequestOptions,
         cancellation: CancellationToken,
     ) -> AsyncIterator[ModelEvent]: ...
 
@@ -34,6 +36,7 @@ class ScriptedModelAdapter:
         system_prompt: str,
         messages: Sequence[ProviderMessage],
         tools: Sequence[object],
+        request_options: ProviderRequestOptions | None = None,
         cancellation: CancellationToken | None = None,
     ) -> AsyncIterator[ModelEvent]:
         if cancellation is not None:
@@ -60,3 +63,13 @@ class ScriptedModelAdapter:
         if cancellation is not None:
             cancellation.throw_if_cancelled()
         yield ModelEvent(type="done", partial=final)
+
+
+def accepts_request_options(adapter: ModelAdapter) -> bool:
+    import inspect
+
+    signature = inspect.signature(adapter.stream)
+    return "request_options" in signature.parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )

@@ -160,4 +160,5 @@ def create_edit_tool(cwd: str | Path) -> Tool[EditArgs]:
         handler=edit_file,
         execution_mode="sequential",
         prepare_arguments=prepare_edit_arguments,
+        replay_policy="unsafe",
     )

@@ -135,6 +135,22 @@ coding_agent -> beta_agent
 
 Core 不依赖 Coding Agent 产品层。
 
+## Durable Runtime v1
+
+Durable mode 默认关闭。Coding Agent 可通过 `DurableRuntimeOptions(database_path=..., session_file=...)`
+显式启用。启用后，工具执行在外部 effect 前写入最终调用 intent，在 effect 后把完整结果与
+transactional outbox 同事务提交；Session 使用同目录临时文件、`fsync` 和原子替换保存，并通过
+`durable_message_id` 幂等补写。SQLite reopen 会安全重放同时被历史 intent 和当前工具声明为
+`safe` 的操作，并把其他结果未知的操作写成明确的 interrupted tool result。
+
+内置工具策略为：`read_file`、`grep`、`write_file` 是 `safe`；`edit`、`bash` 是 `unsafe`。
+`write_file` 采用同目录原子替换，使相同完整内容的重复写入收敛。
+
+v1 不承诺任意外部副作用 exactly once，也不是完整 Pico5 scheduler。它不自动重放 unsafe 或未知
+第三方工具，不恢复崩溃前未完成的流式 token，也不提供多进程 scheduler、task DAG、CRDT 或
+reconciliation hook。恢复完成 operation/outbox/transcript 修复后，会在 `recovery_report` 中报告
+仍需调用方决定是否继续的 run。
+
 ## 当前范围
 
 当前 Core 与产品层覆盖教程第 00～12 章；Coding Agent 位于独立的 `coding_agent` 包，不改变 Core 的 Agent Loop 和 Tool Runtime。

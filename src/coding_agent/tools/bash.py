@@ -116,4 +116,5 @@ def create_bash_tool(cwd: str | Path) -> Tool[BashArgs]:
         args_model=BashArgs,
         handler=bash,
         execution_mode="sequential",
+        replay_policy="unsafe",
     )

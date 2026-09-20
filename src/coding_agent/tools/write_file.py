@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import tempfile
 
 from pydantic import BaseModel, Field
 
@@ -24,7 +26,25 @@ def create_write_file_tool(cwd: str | Path) -> Tool[WriteFileArgs]:
         encoded = args.content.encode("utf-8")
         try:
             candidate.parent.mkdir(parents=True, exist_ok=True)
-            candidate.write_bytes(encoded)
+            descriptor, temporary_name = tempfile.mkstemp(prefix=f".{candidate.name}.", dir=candidate.parent)
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary_name, candidate)
+                if os.name == "posix":
+                    directory_fd = os.open(candidate.parent, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+            except BaseException:
+                try:
+                    os.unlink(temporary_name)
+                except FileNotFoundError:
+                    pass
+                raise
         except OSError as exc:
             raise OSError(f"Unable to write file {args.path!r}: {exc}") from exc
         return ToolResult(
@@ -38,4 +58,5 @@ def create_write_file_tool(cwd: str | Path) -> Tool[WriteFileArgs]:
         args_model=WriteFileArgs,
         handler=write_file,
         execution_mode="sequential",
+        replay_policy="safe",
     )

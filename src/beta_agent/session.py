@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +38,16 @@ class SessionTree:
     def __init__(self, entries: Iterable[SessionEntry] = (), leaf_id: str | None = None) -> None:
         self.entries = list(entries)
         self.by_id = {entry.id: entry for entry in self.entries}
+        self._durable_messages: dict[str, SessionEntry] = {}
+        for entry in self.entries:
+            if entry.type != "message":
+                continue
+            durable_id = entry.payload.get("metadata", {}).get("durable_message_id")
+            if durable_id:
+                previous = self._durable_messages.get(durable_id)
+                if previous is not None and previous.payload != entry.payload:
+                    raise ValueError(f"Conflicting durable message id: {durable_id}")
+                self._durable_messages[durable_id] = entry
         # leaf_id 只表示“当前从哪条历史继续”，不会删除或改写其他分支。
         self.leaf_id = leaf_id if leaf_id is not None else (self.entries[-1].id if self.entries else None)
 
@@ -55,7 +67,18 @@ class SessionTree:
         return entry
 
     def append_message(self, message: AgentMessage) -> SessionEntry:
-        return self._append("message", _message_to_dict(message))
+        payload = agent_message_to_dict(message)
+        durable_id = message.metadata.get("durable_message_id")
+        if durable_id:
+            previous = self._durable_messages.get(durable_id)
+            if previous is not None:
+                if previous.payload != payload:
+                    raise ValueError(f"Conflicting durable message id: {durable_id}")
+                return previous
+        entry = self._append("message", payload)
+        if durable_id:
+            self._durable_messages[durable_id] = entry
+        return entry
 
     def append_compaction(self, *, summary: str, first_kept_entry_id: str, tokens_before: int) -> SessionEntry:
         return self._append(
@@ -88,7 +111,7 @@ class SessionTree:
         branch = self.get_branch(from_id)
         compactions = [entry for entry in branch if entry.type == "compaction"]
         if not compactions:
-            return [_message_from_dict(e.payload) for e in branch if e.type == "message"]
+            return [agent_message_from_dict(e.payload) for e in branch if e.type == "message"]
 
         # Compaction 是 branch-local 的：只使用当前 active path 上“最近一次”压缩记录。
         latest = compactions[-1]
@@ -96,19 +119,19 @@ class SessionTree:
         start = next((i for i, entry in enumerate(branch) if entry.id == first_kept_id), None)
         if start is None:
             # 持久化数据异常时优先回退到完整消息，避免因为摘要记录损坏而丢失上下文。
-            return [_message_from_dict(e.payload) for e in branch if e.type == "message"]
+            return [agent_message_from_dict(e.payload) for e in branch if e.type == "message"]
 
         # 重建工作上下文时才应用摘要；Session 中被摘要覆盖的旧 Entry 仍然保留。
         # 先从被压缩的 transcript 重建有效 system/tool baseline，避免 summary
         # 覆盖原始指令或丢失当时已经声明的工具。
         prefix_entries = [entry for entry in branch[:start] if entry.type == "message"]
-        prefix_messages = [_message_from_dict(e.payload) for e in prefix_entries]
+        prefix_messages = [agent_message_from_dict(e.payload) for e in prefix_entries]
         system_prompt = get_current_system_prompt(prefix_messages)
         tool_declarations = get_current_tool_declarations(prefix_messages)
         messages: list[AgentMessage] = []
         if system_prompt or tool_declarations:
             messages.append(AgentMessage.system(system_prompt, tools_added=tool_declarations))
-        tail_messages = [_message_from_dict(e.payload) for e in branch[start:] if e.type == "message"]
+        tail_messages = [agent_message_from_dict(e.payload) for e in branch[start:] if e.type == "message"]
         migration_baselines = [
             message for message in tail_messages if message.metadata.get("legacy_migration_baseline")
         ]
@@ -128,9 +151,11 @@ class SessionTree:
     def save_jsonl(self, path: str | Path) -> None:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("w", encoding="utf-8") as handle:
-            for entry in self.entries:
-                handle.write(
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                for entry in self.entries:
+                    handle.write(
                     json.dumps(
                         {
                             "id": entry.id,
@@ -144,7 +169,7 @@ class SessionTree:
                     + "\n"
                 )
             # leaf 是 Session 当前视角，不属于某个历史 Entry，因此单独写入 meta 行。
-            handle.write(
+                handle.write(
                 json.dumps(
                     {
                         "_meta": {
@@ -155,7 +180,22 @@ class SessionTree:
                     ensure_ascii=False,
                 )
                 + "\n"
-            )
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_name, target)
+            if os.name == "posix":
+                directory_fd = os.open(target.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        except BaseException:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+            raise
 
     @classmethod
     def load_jsonl(cls, path: str | Path) -> "SessionTree":
@@ -225,7 +265,7 @@ def _content_from_json(value: Any) -> list[TextContent | ImageContent]:
     return blocks
 
 
-def _message_to_dict(message: AgentMessage) -> dict[str, Any]:
+def agent_message_to_dict(message: AgentMessage) -> dict[str, Any]:
     return {
         "role": message.role,
         "content": _content_to_json(message),
@@ -246,7 +286,7 @@ def _message_to_dict(message: AgentMessage) -> dict[str, Any]:
     }
 
 
-def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
+def agent_message_from_dict(data: dict[str, Any]) -> AgentMessage:
     return AgentMessage(
         role=data["role"],
         content=_content_from_json(data.get("content", "")),
@@ -260,3 +300,8 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
         tools_added=[ToolDeclaration(**tool) for tool in data.get("tools_added", [])],
         tools_removed=[ToolReference(**tool) for tool in data.get("tools_removed", [])],
     )
+
+
+# Private aliases remain for callers that imported an older internal name.
+_message_to_dict = agent_message_to_dict
+_message_from_dict = agent_message_from_dict

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import inspect
+import random
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -9,6 +13,7 @@ import httpx
 
 from ..cancellation import CancellationToken
 from ..provider_messages import ProviderImageContent, ProviderMessage, ProviderTextContent
+from ..provider_policy import ProviderRequestOptions
 from ..types import AgentMessage, ModelEvent, ToolCall
 
 
@@ -19,16 +24,32 @@ class OpenAICompatibleAdapter:
         self,
         *,
         model: str,
-        api_key: str,
+        api_key: str | Any,
         base_url: str = "https://api.openai.com/v1",
         timeout: float = 120.0,
         extra_body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        session_header: str | None = None,
+        before_payload: Any = None,
+        on_response: Any = None,
+        allow_authorization_override: bool = False,
     ) -> None:
         self.model = model
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.extra_body = extra_body or {}
+        self.headers = dict(headers or {})
+        self.session_header = session_header
+        self.before_payload = before_payload
+        self.on_response = on_response
+        self.allow_authorization_override = allow_authorization_override
+
+    async def _api_key(self) -> str:
+        value = self.api_key() if callable(self.api_key) else self.api_key
+        if inspect.isawaitable(value):
+            value = await value
+        return str(value)
 
     async def stream(
         self,
@@ -36,12 +57,16 @@ class OpenAICompatibleAdapter:
         system_prompt: str,
         messages: Sequence[ProviderMessage],
         tools: Sequence[object],
+        request_options: ProviderRequestOptions | None = None,
         cancellation: CancellationToken | None = None,
     ) -> AsyncIterator[ModelEvent]:
         text = ""
         tool_parts: dict[int, dict[str, Any]] = {}
         finish_reason = "stop"
         try:
+            options = request_options or ProviderRequestOptions()
+            if options.transport == "websocket":
+                raise ValueError("OpenAICompatibleAdapter does not support websocket transport")
             if cancellation is not None:
                 cancellation.throw_if_cancelled()
             payload: dict[str, Any] = {
@@ -54,18 +79,50 @@ class OpenAICompatibleAdapter:
             if not payload["tools"]:
                 payload.pop("tools")
 
-            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-            partial = AgentMessage.assistant("", stop_reason="stop")
-            yield ModelEvent(type="start", partial=partial)
+            if self.before_payload is not None:
+                replacement = self.before_payload(dict(payload))
+                if inspect.isawaitable(replacement):
+                    replacement = await replacement
+                if replacement is not None:
+                    payload = dict(replacement)
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self.base_url}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                ) as response:
-                    response.raise_for_status()
+            headers = {"Content-Type": "application/json", **self.headers, **dict(options.headers)}
+            if self.session_header and options.session_id:
+                headers[self.session_header] = options.session_id
+            timeout = self.timeout if options.timeout_seconds is None else options.timeout_seconds
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = None
+                for attempt in range(options.retry.max_retries + 1):
+                    attempt_headers = dict(headers)
+                    if not self.allow_authorization_override or "Authorization" not in attempt_headers:
+                        attempt_headers["Authorization"] = f"Bearer {await self._api_key()}"
+                    try:
+                        request = client.build_request("POST", f"{self.base_url}/chat/completions", json=payload, headers=attempt_headers)
+                        response = await client.send(request, stream=True)
+                        response.raise_for_status()
+                        break
+                    except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                        if response is not None:
+                            retryable = _retryable_response(response)
+                            delay = _retry_delay(response)
+                            await response.aclose()
+                        else:
+                            retryable, delay = True, None
+                        if (not options.retry.enabled or not retryable or attempt >= options.retry.max_retries):
+                            raise
+                        if delay is None:
+                            delay = min(options.retry.max_delay_seconds, options.retry.base_delay_seconds * (2 ** attempt) * random.uniform(0.8, 1.2))
+                        if delay > options.retry.max_delay_seconds:
+                            raise
+                        await _cancelable_sleep(delay, cancellation)
+                assert response is not None
+                try:
+                    if self.on_response is not None:
+                        value = self.on_response(response.status_code, dict(response.headers))
+                        if inspect.isawaitable(value):
+                            await value
+                    partial = AgentMessage.assistant("", stop_reason="stop")
+                    yield ModelEvent(type="start", partial=partial)
                     async for line in response.aiter_lines():
                         if cancellation is not None:
                             cancellation.throw_if_cancelled()
@@ -97,6 +154,8 @@ class OpenAICompatibleAdapter:
                             stop_reason=self._map_finish_reason(finish_reason),
                         )
                         yield ModelEvent(type="update", partial=partial)
+                finally:
+                    await response.aclose()
 
             final = AgentMessage.assistant(
                 text,
@@ -209,3 +268,35 @@ class OpenAICompatibleAdapter:
         if reason == "length":
             return "length"
         return "stop"
+
+
+def _retryable_response(response: httpx.Response) -> bool:
+    directive = response.headers.get("x-should-retry", "").lower()
+    if directive == "false": return False
+    if directive == "true": return True
+    return response.status_code in {408, 409, 429} or response.status_code >= 500
+
+
+def _retry_delay(response: httpx.Response) -> float | None:
+    milliseconds = response.headers.get("retry-after-ms")
+    if milliseconds is not None:
+        try: return max(0.0, float(milliseconds) / 1000)
+        except ValueError: return None
+    value = response.headers.get("retry-after")
+    if value is None: return None
+    try: return max(0.0, float(value))
+    except ValueError:
+        try: return max(0.0, (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError): return None
+
+
+async def _cancelable_sleep(delay: float, cancellation: CancellationToken | None) -> None:
+    if delay <= 0: return
+    if cancellation is None:
+        await asyncio.sleep(delay); return
+    sleeper = asyncio.create_task(asyncio.sleep(delay))
+    cancelled = asyncio.create_task(cancellation.wait())
+    done, pending = await asyncio.wait({sleeper, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending: task.cancel()
+    if cancelled in done:
+        raise asyncio.CancelledError()

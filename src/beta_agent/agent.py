@@ -10,7 +10,8 @@ from typing import Any, Literal
 from .cancellation import CancellationToken, accepts_cancellation, call_with_optional_cancellation
 from .errors import AgentErrorInfo, ErrorStage, RunStatus
 from .events import EventStream
-from .model import ModelAdapter
+from .model import ModelAdapter, accepts_request_options
+from .provider_policy import ProviderRequestOptions, merge_provider_request_options
 from .provider_messages import ProviderMessage, default_convert_to_llm
 from .transcript import collapse_transcript, declare_tool_changes, get_current_system_prompt
 from .tools import AfterToolCall, BeforeToolCall, ToolRuntime
@@ -71,6 +72,8 @@ class AgentConfig:
 
     # 可选 Hook，在工具执行完成后、结果事件发出前修改结果、错误状态或终止标记。
     after_tool_call: AfterToolCall | None = None
+    provider_request_options: ProviderRequestOptions = dataclass_field(default_factory=ProviderRequestOptions)
+    tool_coordinator: Any = None
 
 
 @dataclass(slots=True)
@@ -155,6 +158,7 @@ class Agent:
         self._last_error: AgentErrorInfo | None = None
         self._external_failure: AgentErrorInfo | None = None
         self._subscribers: list[Callable[..., Any]] = []
+        self._provider_request_options = self.config.provider_request_options
 
     @property
     def messages(self) -> list[AgentMessage]:
@@ -447,6 +451,10 @@ class Agent:
                                 self.context = next_update.context
                             if next_update.model is not None:
                                 self.model = next_update.model
+                            if next_update.request_options is not None:
+                                self._provider_request_options = merge_provider_request_options(
+                                    self._provider_request_options, next_update.request_options
+                                )
                             prepared_messages = list(next_update.messages)
                         elif next_update is not None:
                             # Keep the historical AgentContext return contract.
@@ -498,6 +506,7 @@ class Agent:
                             before_tool_call=self.config.before_tool_call,
                             after_tool_call=self.config.after_tool_call,
                             execution_mode=self.config.tool_execution,
+                            coordinator=self.config.tool_coordinator,
                         )
                         batch = await tool_runtime.execute_batch(
                             context=self.context,
@@ -694,6 +703,17 @@ class Agent:
         }
         if accepts_cancellation(stream):
             kwargs["cancellation"] = cancellation
+        if accepts_request_options(self.model):
+            kwargs["request_options"] = ProviderRequestOptions(
+                session_id=self._provider_request_options.session_id,
+                timeout_seconds=self._provider_request_options.timeout_seconds,
+                retry=self._provider_request_options.retry,
+                headers=dict(self._provider_request_options.headers),
+                metadata=dict(self._provider_request_options.metadata),
+                transport=self._provider_request_options.transport,
+                reasoning=self._provider_request_options.reasoning,
+                thinking_budget_tokens=self._provider_request_options.thinking_budget_tokens,
+            )
         return stream(**kwargs)
 
     async def _fail_truncated_tool_calls(

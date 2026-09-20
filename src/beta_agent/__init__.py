@@ -20,7 +20,11 @@ from .provider_messages import (
     ProviderTextContent,
     default_convert_to_llm,
 )
-from .session import SessionEntry, SessionTree
+from .session import SessionEntry, SessionTree, agent_message_from_dict, agent_message_to_dict
+from .provider_policy import ProviderRequestOptions, ProviderRequestOptionsPatch, RetryPolicy, merge_provider_request_options
+from .durable import DurableStorage, MemoryStorage, SQLiteStorage
+from .durable.coordinator import DurableToolCoordinator
+from .durable.recovery import RecoveryReport, recover_durable_runtime
 from .skills import Skill, SkillCatalog
 from .tools import (
     AfterToolCallPatch,
@@ -56,6 +60,18 @@ from .transcript import (
 
 __all__ = [
     "Agent",
+    "ProviderRequestOptions",
+    "ProviderRequestOptionsPatch",
+    "RetryPolicy",
+    "merge_provider_request_options",
+    "DurableStorage",
+    "DurableToolCoordinator",
+    "MemoryStorage",
+    "SQLiteStorage",
+    "RecoveryReport",
+    "recover_durable_runtime",
+    "agent_message_from_dict",
+    "agent_message_to_dict",
     "AgentConfig",
     "AgentErrorInfo",
     "AgentContent",

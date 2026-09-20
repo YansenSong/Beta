@@ -124,4 +124,5 @@ def create_read_file_tool(cwd: str | Path) -> Tool[ReadFileArgs]:
         args_model=ReadFileArgs,
         handler=read_file,
         execution_mode="parallel",
+        replay_policy="safe",
     )

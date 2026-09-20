@@ -72,6 +72,7 @@ class ExtensionTool(Generic[ArgsT]):
     args_model: type[ArgsT]
     handler: ExtensionToolHandler[ArgsT]
     execution_mode: Literal["parallel", "sequential"] = "parallel"
+    replay_policy: Literal["safe", "unsafe"] = "unsafe"
 
 @dataclass(slots=True)
 class RegisteredCommand:

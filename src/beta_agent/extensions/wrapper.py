@@ -20,4 +20,4 @@ def wrap_registered_tool(registered: ExtensionTool[Any], runner) -> Tool[Any]:
             if added:
                 result.added_tool_names = list(dict.fromkeys([*result.added_tool_names, *added]))
         return result
-    return Tool(name=registered.name, description=registered.description, args_model=registered.args_model, handler=execute, execution_mode=registered.execution_mode)
+    return Tool(name=registered.name, description=registered.description, args_model=registered.args_model, handler=execute, execution_mode=registered.execution_mode, replay_policy=registered.replay_policy)

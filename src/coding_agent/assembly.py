@@ -6,6 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from beta_agent.agent import Agent
+from beta_agent.events import EventStream
+from beta_agent.durable import SQLiteStorage
+from beta_agent.durable.coordinator import DurableToolCoordinator
+from beta_agent.durable.records import TaskOutcome, TaskRecord
+from beta_agent.durable.recovery import RecoveryReport, recover_durable_runtime
+from beta_agent.messages import utc_now_iso
+import uuid
 from beta_agent.compaction import Summarizer, compact_session
 from beta_agent.extensions import ExtensionFactory, ExtensionHost, ExtensionRunner, RuntimeConfig, bind_extensions
 from beta_agent.model import ModelAdapter
@@ -25,6 +32,13 @@ class CodingCompactionOptions:
 
 
 @dataclass(slots=True)
+class DurableRuntimeOptions:
+    database_path: str | Path
+    session_file: str | Path
+    session_id: str | None = None
+
+
+@dataclass(slots=True)
 class CodingAgentOptions:
     cwd: str | Path
     model: ModelAdapter
@@ -37,6 +51,7 @@ class CodingAgentOptions:
     child_model_factory: Callable[[], ModelAdapter] | None = None
     session_file: str | Path | None = None
     compaction: CodingCompactionOptions | None = None
+    durable: DurableRuntimeOptions | None = None
 
 
 @dataclass(slots=True)
@@ -52,13 +67,44 @@ class CodingAgentRuntime:
     cwd: Path
     session_file: Path | None
     compaction: CodingCompactionOptions | None = None
+    durable_storage: SQLiteStorage | None = None
+    recovery_report: RecoveryReport | None = None
+    durable_session_id: str | None = None
     _closed: bool = field(default=False, init=False, repr=False)
 
     def stream(self, prompt: str):
-        return self.host.stream(prompt)
+        if self.durable_storage is None:
+            return self.host.stream(prompt)
+
+        child = None
+        async def drive(emit):
+            nonlocal child
+            task_id = uuid.uuid4().hex
+            now = utc_now_iso()
+            task = TaskRecord(task_id, self.durable_session_id or task_id,
+                "agent_run", 1, "running", {"prompt": prompt},
+                {"phase": "agent_loop", "session_leaf_id": self.session.leaf_id,
+                 "started_message_count": len(self.agent.messages)}, None, False, False, now, now)
+            await self.durable_storage.create_task(task)
+            self.agent.config.tool_coordinator = DurableToolCoordinator(self.durable_storage, task_id=task_id, run_id=task_id)
+            child = self.host.stream(prompt)
+            try:
+                async for event in child:
+                    await emit(event)
+                result = await child.result()
+                await self.durable_storage.terminalize_task(task_id, TaskOutcome("completed", result={"message_count": len(result)}), utc_now_iso())
+                return result
+            except BaseException as exc:
+                status = "aborted" if isinstance(exc, asyncio.CancelledError) else "failed"
+                await self.durable_storage.terminalize_task(task_id, TaskOutcome(status, reason=str(exc)), utc_now_iso())
+                raise
+            finally:
+                self.agent.config.tool_coordinator = None
+        import asyncio
+        return EventStream(drive, on_cancel=lambda _: child.cancel() if child is not None else None)
 
     async def run(self, prompt: str):
-        return await self.host.run(prompt)
+        return await self.stream(prompt).result()
 
     def continue_stream(self):
         return self.host.continue_stream()
@@ -92,7 +138,16 @@ class CodingAgentRuntime:
         if self.session_file is not None:
             self.session.save_jsonl(self.session_file)
 
+    async def aclose(self) -> None:
+        if not self._closed:
+            self.host.close()
+            if self.durable_storage is not None:
+                await self.durable_storage.close()
+            self._closed = True
+
     def close(self) -> None:
+        if self.durable_storage is not None:
+            raise RuntimeError("Durable runtime requires await runtime.aclose()")
         if not self._closed:
             self.host.close()
             self._closed = True
@@ -148,7 +203,10 @@ async def create_coding_agent(options: CodingAgentOptions) -> CodingAgentRuntime
     _check_unique_tools(tools, source="extra tools")
 
     skills = _discover_skills(cwd, options.skill_roots)
-    session_file = None if options.session_file is None else _workspace_path(cwd, options.session_file)
+    if options.durable is not None and options.session_file is not None:
+        raise ValueError("Set the session file through durable options when durable mode is enabled")
+    session_setting = options.durable.session_file if options.durable is not None else options.session_file
+    session_file = None if session_setting is None else _workspace_path(cwd, session_setting)
     if session_file is not None and session_file.exists():
         session = SessionTree.load_jsonl(session_file)
         initial_messages = session.reconstruct_messages()
@@ -210,6 +268,20 @@ async def create_coding_agent(options: CodingAgentOptions) -> CodingAgentRuntime
 
     agent = Agent(model=options.model, system_prompt=system_prompt, tools=tools, messages=initial_messages)
     host = bind_extensions(agent, runner, persist_messages=True)
+    storage = None
+    recovery_report = None
+    if options.durable is not None:
+        database_path = _workspace_path(cwd, options.durable.database_path)
+        storage = SQLiteStorage(database_path)
+        await storage.open()
+        recovery_report = await recover_durable_runtime(
+            storage, session, session_file, tools, after_tool_call=agent.config.after_tool_call
+        )
+        async def persist_durable_message(event, cancellation=None):
+            del cancellation
+            if event.type == "message_end":
+                session.save_jsonl(session_file)
+        agent.subscribe(persist_durable_message)
     return CodingAgentRuntime(
         agent=agent,
         host=host,
@@ -220,4 +292,7 @@ async def create_coding_agent(options: CodingAgentOptions) -> CodingAgentRuntime
         cwd=cwd,
         session_file=session_file,
         compaction=options.compaction,
+        durable_storage=storage,
+        recovery_report=recovery_report,
+        durable_session_id=(options.durable.session_id if options.durable is not None else None),
     )

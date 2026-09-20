@@ -134,4 +134,5 @@ def create_grep_tool(cwd: str | Path) -> Tool[GrepArgs]:
         args_model=GrepArgs,
         handler=grep,
         execution_mode="parallel",
+        replay_policy="safe",
     )

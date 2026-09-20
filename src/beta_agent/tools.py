@@ -4,7 +4,7 @@ import asyncio
 import inspect
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Generic, Literal, TypeVar
+from typing import Any, Awaitable, Callable, Generic, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -44,6 +44,13 @@ class ToolExecutionContext:
     _emit: Emit
     _accepting_updates: bool
     _update_lock: asyncio.Lock
+    operation_id: str | None
+    run_id: str | None
+    batch_id: str | None
+    attempt: int
+    is_recovery: bool
+    _memo_get: Callable[[str], Awaitable[Any]] | None
+    _memo_set: Callable[[str, Any], Awaitable[Any]] | None
 
     def __init__(
         self,
@@ -54,6 +61,13 @@ class ToolExecutionContext:
         *,
         cancellation: CancellationToken | None = None,
         _emit: Emit | None = None,
+        operation_id: str | None = None,
+        run_id: str | None = None,
+        batch_id: str | None = None,
+        attempt: int = 1,
+        is_recovery: bool = False,
+        memo_get: Callable[[str], Awaitable[Any]] | None = None,
+        memo_set: Callable[[str, Any], Awaitable[Any]] | None = None,
     ) -> None:
         """同时兼容 P0 的 ``(id, name, token, emit)`` 和旧 shape。"""
 
@@ -81,6 +95,23 @@ class ToolExecutionContext:
         self._emit = emit_value
         self._accepting_updates = True
         self._update_lock = asyncio.Lock()
+        self.operation_id = operation_id
+        self.run_id = run_id
+        self.batch_id = batch_id
+        self.attempt = attempt
+        self.is_recovery = is_recovery
+        self._memo_get = memo_get
+        self._memo_set = memo_set
+
+    async def get_memo(self, name: str) -> Any:
+        if self._memo_get is None:
+            raise RuntimeError("Durable memo is unavailable outside durable execution")
+        return await self._memo_get(name)
+
+    async def memo(self, name: str, candidate: Any) -> Any:
+        if self._memo_set is None:
+            raise RuntimeError("Durable memo is unavailable outside durable execution")
+        return await self._memo_set(name, candidate)
 
     async def progress(self, partial_result: Any) -> None:
         # 长耗时 Tool 可以主动上报中间状态；这些 update 只用于 UI/Tracing，不写入消息历史。
@@ -111,6 +142,7 @@ class Tool(Generic[ArgsT]):
     # 单个 Tool 可以要求顺序执行；同一批里只要出现一个 sequential Tool，整批就退化为串行。
     execution_mode: Literal["parallel", "sequential"] = "parallel"
     prepare_arguments: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    replay_policy: Literal["safe", "unsafe"] = "unsafe"
 
     def schema(self) -> dict[str, Any]:
         return self.args_model.model_json_schema()
@@ -129,6 +161,7 @@ class _Prepared:
     call: ToolCall
     tool: Tool[Any]
     args: BaseModel
+    durable_handle: Any = None
 
 
 @dataclass(slots=True)
@@ -137,6 +170,15 @@ class _Finalized:
     result: ToolResult
     is_error: bool
     aborted: bool = False
+    durable_handle: Any = None
+    durable_metadata: dict[str, Any] | None = None
+
+
+class ToolCoordinator(Protocol):
+    async def prepare_operation(self, prepared: _Prepared, source_index: int) -> Any: ...
+    async def settle_operation(self, handle: Any, result: ToolResult, is_error: bool) -> dict[str, Any]: ...
+    async def acknowledge_published(self, operation_id: str) -> None: ...
+    def execution_context_kwargs(self, handle: Any) -> dict[str, Any]: ...
 
 
 class ToolRuntime:
@@ -148,10 +190,12 @@ class ToolRuntime:
         before_tool_call: BeforeToolCall | None = None,
         after_tool_call: AfterToolCall | None = None,
         execution_mode: Literal["parallel", "sequential"] = "parallel",
+        coordinator: ToolCoordinator | None = None,
     ) -> None:
         self.before_tool_call = before_tool_call
         self.after_tool_call = after_tool_call
         self.execution_mode = execution_mode
+        self.coordinator = coordinator
 
     async def execute_batch(
         self,
@@ -204,6 +248,8 @@ class ToolRuntime:
                 await self._emit_start(call, emit)
                 started = True
                 prepared = await self._prepare(context, call, cancellation)
+                if isinstance(prepared, _Prepared) and self.coordinator is not None:
+                    prepared.durable_handle = await self.coordinator.prepare_operation(prepared, index)
                 item = prepared if isinstance(prepared, _Finalized) else await self._execute_prepared(
                     context, prepared, emit, cancellation
                 )
@@ -247,6 +293,11 @@ class ToolRuntime:
                 return finalized, True
 
         tasks: dict[int, asyncio.Task[_Finalized]] = {}
+
+        if self.coordinator is not None:
+            for index, entry in enumerate(entries):
+                if isinstance(entry, _Prepared):
+                    entry.durable_handle = await self.coordinator.prepare_operation(entry, index)
 
         async def run(index: int, entry: _Prepared) -> _Finalized:
             item = await self._execute_prepared(context, entry, emit, cancellation)
@@ -405,6 +456,7 @@ class ToolRuntime:
             prepared.call.name,
             emit,
             cancellation=cancellation,
+            **(self.coordinator.execution_context_kwargs(prepared.durable_handle) if self.coordinator and prepared.durable_handle else {}),
         )
         try:
             result = await prepared.tool.execute(prepared.args, execution_context)
@@ -463,7 +515,10 @@ class ToolRuntime:
                 if patch.usage is not None:
                     result.usage = dict(patch.usage)
 
-        return _Finalized(prepared.call, result, is_error)
+        metadata = None
+        if self.coordinator is not None and prepared.durable_handle is not None:
+            metadata = await self.coordinator.settle_operation(prepared.durable_handle, result, is_error)
+        return _Finalized(prepared.call, result, is_error, durable_handle=prepared.durable_handle, durable_metadata=metadata)
 
     async def _emit_start(self, call: ToolCall, emit: Emit) -> None:
         # start 表示 Runtime 开始处理这次调用；即使 Tool 不存在或参数非法，也会有完整生命周期事件。
@@ -502,9 +557,12 @@ class ToolRuntime:
                 terminate=item.result.terminate,
                 aborted=item.aborted,
                 usage=item.result.usage,
+                **(item.durable_metadata or {}),
             )
             await emit(AgentEvent(type="message_start", message=message))
             await emit(AgentEvent(type="message_end", message=message))
+            if self.coordinator is not None and item.durable_metadata:
+                await self.coordinator.acknowledge_published(item.durable_metadata["durable_operation_id"])
             messages.append(message)
 
         return messages

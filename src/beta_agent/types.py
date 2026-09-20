@@ -7,6 +7,7 @@ from typing import Any, Literal, TYPE_CHECKING
 if TYPE_CHECKING:
     from .model import ModelAdapter
     from .tools import Tool
+    from .provider_policy import ProviderRequestOptionsPatch
 
 from .messages import (
     AgentContent,
@@ -105,6 +106,7 @@ class NextTurnUpdate:
     context: AgentContext | None = None
     messages: list[AgentMessage] = field(default_factory=list)
     model: "ModelAdapter | None" = None
+    request_options: "ProviderRequestOptionsPatch | None" = None
 
 
 @dataclass(slots=True)
