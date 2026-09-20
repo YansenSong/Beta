@@ -108,13 +108,21 @@ class SessionTree:
         messages: list[AgentMessage] = []
         if system_prompt or tool_declarations:
             messages.append(AgentMessage.system(system_prompt, tools_added=tool_declarations))
+        tail_messages = [_message_from_dict(e.payload) for e in branch[start:] if e.type == "message"]
+        migration_baselines = [
+            message for message in tail_messages if message.metadata.get("legacy_migration_baseline")
+        ]
+        # A legacy compacted Session has no state in the prefix, so its migration
+        # snapshot is appended after the old summary in storage. In the reconstructed
+        # model context, keep the durable baseline before that summary.
+        messages.extend(migration_baselines)
         messages.append(
             AgentMessage.system(
                 f"Conversation summary:\n{latest.payload['summary']}",
                 compaction_entry_id=latest.id,
             )
         )
-        messages.extend(_message_from_dict(e.payload) for e in branch[start:] if e.type == "message")
+        messages.extend(message for message in tail_messages if not message.metadata.get("legacy_migration_baseline"))
         return messages
 
     def save_jsonl(self, path: str | Path) -> None:

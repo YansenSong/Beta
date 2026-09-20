@@ -259,9 +259,7 @@ class Agent:
         self._ensure_idle()
         if not self.context.messages:
             raise ValueError("Cannot continue: no messages in context")
-        if self.context.messages[-1].role == "assistant" and not self.has_queued_messages() and not (
-            self.config.get_steering_messages or self.config.get_follow_up_messages
-        ):
+        if self.context.messages[-1].role == "assistant" and not self.has_queued_messages():
             raise ValueError("Cannot continue from an assistant message")
         return self.stream([])
 
@@ -393,13 +391,17 @@ class Agent:
         await emit(AgentEvent(type="agent_start"))
         cancellation.throw_if_cancelled()
 
-        self.context.messages.extend(prompts)
+        # Reconcile against prompts before making them part of canonical history:
+        # a prompt received now is interpreted under the current executable tools.
+        initial_messages = declare_tool_changes(self.context, prompts)
+        state.new_messages = list(initial_messages)
+        self.context.messages.extend(initial_messages)
         state.turn_started = True
 
         # 一次turn是只包含一轮模型的调用（看到消息-工具调用-工具返回结果）
         # 工具返回结果-模型回复为新的turn。一个run中可能包含多个turn
         await emit(AgentEvent(type="turn_start"))
-        for message in prompts:
+        for message in initial_messages:
             cancellation.throw_if_cancelled()
             await emit(AgentEvent(type="message_start", message=message))
             await emit(AgentEvent(type="message_end", message=message))
@@ -564,11 +566,10 @@ class Agent:
                 raise _StageFailure(_error_info("transform_context", exc)) from exc
         cancellation.throw_if_cancelled()
 
-        system_prompt, _ = collapse_transcript(self.context.messages)
-        # System state is replayed from the durable transcript and collapsed into
-        # the adapter's leading system_prompt field. It must not also appear in
-        # provider messages, where it would be duplicated as historical state.
-        runtime_messages = [message for message in runtime_messages if message.role != "system"]
+        # Apply the same compatibility projection to the transformed view so
+        # temporary system instructions affect this request without mutating the
+        # durable transcript. Runtime-executable tools still come only from context.tools.
+        system_prompt, runtime_messages = collapse_transcript(runtime_messages)
 
         try:
             converted_messages = await self._call(

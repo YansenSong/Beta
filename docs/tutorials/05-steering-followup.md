@@ -159,7 +159,7 @@ break
 
 `AgentConfig.steering_mode` 与 `follow_up_mode` 分别控制队列消费方式，默认都是 `"one-at-a-time"`：每个合法 checkpoint 只取最旧的一条，其余消息留到后续同类 checkpoint。设为 `"all"` 则保持一次 drain 全部消息的行为。外部 `get_steering_messages` / `get_follow_up_messages` provider 返回的消息也先进入对应队列，再按相同 mode 消费。
 
-若 history 最后一条是 Assistant，`continue_stream()` 仍默认拒绝继续；但只要有 queued Steering / Follow-up，或配置了对应的外部 message provider，就可以恢复运行。优先级不变：可用 Steering 先进入下一轮，Follow-up 只在 Agent 本来准备结束时读取。
+若 history 最后一条是 Assistant，`continue_stream()` 只有在内部确实排着 Steering / Follow-up 时才允许恢复；仅仅配置了一个可能返回空列表的 provider 不算有待处理消息。优先级不变：可用 Steering 先进入下一轮，Follow-up 只在 Agent 本来准备结束时读取。
 
 ## 7. 掌握标准
 

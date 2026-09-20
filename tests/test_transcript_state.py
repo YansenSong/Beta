@@ -170,6 +170,83 @@ async def test_runtime_tool_change_is_recorded_before_next_provider_request():
     assert delta_lifecycle == ["message_start", "message_end"]
 
 
+async def test_idle_tool_change_is_declared_before_new_prompt_and_branch_replays_it():
+    tool_a = _tool("a")
+    tool_b = _tool("b")
+    agent = Agent(model=ScriptedModelAdapter([AgentMessage.assistant("done")]), tools=[tool_a])
+    agent.context.tools = [tool_b]
+
+    new_messages = await agent.run("question under tool b")
+
+    assert [(message.role, message.text) for message in new_messages] == [
+        ("system", ""),
+        ("user", "question under tool b"),
+        ("assistant", "done"),
+    ]
+    history = SessionTree()
+    for message in agent.messages:
+        history.append_message(message)
+    user_entry = next(
+        entry for entry in history.entries
+        if entry.payload["role"] == "user"
+        and entry.payload["content"][0]["text"] == "question under tool b"
+    )
+    history.branch(user_entry.id)
+    assert [item.name for item in get_current_tool_declarations(history.reconstruct_messages())] == ["b"]
+
+
+async def test_transform_context_projects_temporary_system_messages_without_mutating_history():
+    tool = _tool("a")
+
+    class RecordingModel(ScriptedModelAdapter):
+        def __init__(self):
+            super().__init__([AgentMessage.assistant("done once"), AgentMessage.assistant("done twice")])
+            self.requests = []
+
+        async def stream(self, *, system_prompt, messages, tools, cancellation=None):
+            self.requests.append((system_prompt, list(messages), list(tools)))
+            async for event in super().stream(
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=tools,
+                cancellation=cancellation,
+            ):
+                yield event
+
+    def transform(messages):
+        current_prompt = next(message.text for message in reversed(messages) if message.role == "user")
+        if current_prompt == "review this":
+            return [*messages, AgentMessage.system("temporary addition")]
+        return [
+            *(message for message in messages if message.role != "system"),
+            AgentMessage.system("temporary replacement"),
+        ]
+
+    model = RecordingModel()
+    agent = Agent(
+        model=model,
+        system_prompt="durable instructions",
+        tools=[tool],
+        config=AgentConfig(transform_context=transform),
+    )
+
+    await agent.run("review this")
+    await agent.run("replace the temporary system view")
+
+    first_prompt, first_messages, first_tools = model.requests[0]
+    second_prompt, _, second_tools = model.requests[1]
+    assert first_prompt == "durable instructions\n\ntemporary addition"
+    assert second_prompt == "temporary replacement"
+    assert [message.role for message in first_messages] == ["user"]
+    assert [item.name for item in first_tools] == ["a"]
+    assert [item.name for item in second_tools] == ["a"]
+    assert agent.system_prompt == "durable instructions"
+    assert all(
+        message.role != "system" or "temporary" not in message.text
+        for message in agent.messages
+    )
+
+
 def test_redefinition_is_remove_plus_add_and_identical_declaration_is_noop():
     original = ToolDeclaration("lookup", "old", {"type": "object", "properties": {"q": {"type": "string"}}})
     replacement = ToolDeclaration("lookup", "new", {"type": "object", "properties": {"q": {"type": "integer"}}})

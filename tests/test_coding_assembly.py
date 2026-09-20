@@ -210,6 +210,93 @@ async def test_legacy_v2_session_loads_and_appends_durable_migration_baseline(tm
 
 
 @pytest.mark.asyncio
+async def test_legacy_v2_compacted_session_orders_migration_baseline_before_summary(tmp_path: Path):
+    session_path = tmp_path / "legacy-compacted.jsonl"
+    entries = [
+        {
+            "id": "legacy-user-1",
+            "parent_id": None,
+            "timestamp": "2024-01-01T00:00:00+00:00",
+            "type": "message",
+            "payload": {"role": "user", "content": "old question"},
+        },
+        {
+            "id": "legacy-assistant-1",
+            "parent_id": "legacy-user-1",
+            "timestamp": "2024-01-01T00:00:01+00:00",
+            "type": "message",
+            "payload": {"role": "assistant", "content": "old answer"},
+        },
+        {
+            "id": "legacy-user-2",
+            "parent_id": "legacy-assistant-1",
+            "timestamp": "2024-01-01T00:00:02+00:00",
+            "type": "message",
+            "payload": {"role": "user", "content": "recent question"},
+        },
+        {
+            "id": "legacy-assistant-2",
+            "parent_id": "legacy-user-2",
+            "timestamp": "2024-01-01T00:00:03+00:00",
+            "type": "message",
+            "payload": {"role": "assistant", "content": "recent answer"},
+        },
+        {
+            "id": "legacy-compaction",
+            "parent_id": "legacy-assistant-2",
+            "timestamp": "2024-01-01T00:00:04+00:00",
+            "type": "compaction",
+            "payload": {
+                "summary": "legacy summary",
+                "first_kept_entry_id": "legacy-user-2",
+                "tokens_before": 40,
+            },
+        },
+    ]
+    rows = [*entries, {"_meta": {"leaf_id": "legacy-compaction", "format_version": 2}}]
+    session_path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    runtime = await create_coding_agent(
+        CodingAgentOptions(
+            cwd=tmp_path,
+            model=ScriptedModelAdapter([]),
+            session_file=session_path,
+        )
+    )
+    messages = runtime.agent.messages
+    assert [message.role for message in messages[:2]] == ["system", "system"]
+    assert "Current working directory" in messages[0].text
+    assert "Conversation summary:\nlegacy summary" == messages[1].text
+    assert {item.name for item in get_current_tool_declarations(messages)} == {
+        "read_file",
+        "write_file",
+        "edit",
+        "grep",
+        "bash",
+    }
+    assert runtime.agent.system_prompt.index("Current working directory") < runtime.agent.system_prompt.index(
+        "Conversation summary"
+    )
+    assert [message.text for message in messages[-2:]] == ["recent question", "recent answer"]
+
+    await runtime.save_session()
+    runtime.close()
+
+    restored = await create_coding_agent(
+        CodingAgentOptions(
+            cwd=tmp_path,
+            model=ScriptedModelAdapter([]),
+            session_file=session_path,
+        )
+    )
+    restored_messages = restored.agent.messages
+    assert [message.role for message in restored_messages[:2]] == ["system", "system"]
+    assert "Current working directory" in restored_messages[0].text
+    assert "Conversation summary:\nlegacy summary" == restored_messages[1].text
+    restored.close()
+
+
+@pytest.mark.asyncio
 async def test_optional_compaction_replaces_agent_context_and_survives_reload(tmp_path: Path):
     session_path = tmp_path / "compact.jsonl"
     model = ScriptedModelAdapter([Message.assistant("a1"), Message.assistant("a2")])

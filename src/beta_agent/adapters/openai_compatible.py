@@ -143,6 +143,11 @@ class OpenAICompatibleAdapter:
                     ]
                 result.append(item)
             elif message.role == "tool":
+                if any(isinstance(block, ProviderImageContent) for block in message.content):
+                    raise ValueError(
+                        "Chat Completions tool messages support text content only; "
+                        "this tool result contains an image"
+                    )
                 item: dict[str, Any] = {
                     "role": "tool",
                     "tool_call_id": message.tool_call_id,

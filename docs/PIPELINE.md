@@ -20,7 +20,8 @@ while True：
 		if pending:
 			将pending中的消息增加到context.messages中
 			清空pending
-		在下次模型请求前，replay transcript 并将运行时 Tool 变化写成 system-message delta
+		启动新 run 时，先把当前 runtime tools 的 delta 放在本次 prompts 之前，再写入 transcript
+		其他 turn 在模型请求前 replay transcript 并记录运行期间产生的 Tool 变化
 		Hook：transform_context 调用模型之前，修改“本轮模型能看到的消息”
 		将context.messages转换为模型适配层使用的 ProviderMessage
 		从 transcript collapse 得到 system_prompt；使用 ProviderMessage 与当前 executable tools 请求模型API

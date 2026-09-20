@@ -159,6 +159,8 @@ Provider 差异不应进入 Agent Loop。
 
 `AgentContext.messages` 是 canonical transcript：system instruction 增量和模型可见 Tool declaration 通过 system message 顺序重放。每次模型请求前，Agent 会比较 transcript declaration 与当前 executable tools，并将差异作为新 message 持久化。
 
+Run 的初始 prompt 会先与当前 executable tool set 对齐，再一起加入 transcript；因此空闲期间发生的 Tool 切换记录在新 user message 之前，branch 到该请求时也能重放正确工具状态。
+
 它刻意不知道：
 
 ```text
@@ -345,7 +347,7 @@ turn_end
 
 所以两种消息不能简单合并成同一个 pending queue。
 
-两条队列各自支持 `one-at-a-time` 与 `all`，默认都是 `one-at-a-time`。前者每个合法检查点只交付最早的一条，后者保留一次 drain 全部的行为；continue 可从 assistant 结尾恢复的前提是有排队消息或外部消息 provider。
+两条队列各自支持 `one-at-a-time` 与 `all`，默认都是 `one-at-a-time`。前者每个合法检查点只交付最早的一条，后者保留一次 drain 全部的行为；continue 从 assistant 结尾恢复的前提是内部确有排队消息，空的外部 provider 不会被当作可继续的凭据。
 
 ---
 

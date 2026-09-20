@@ -163,3 +163,19 @@ def test_openai_adapter_only_converts_provider_message_dtos():
 
     with pytest.raises(TypeError, match="ProviderMessage"):
         adapter._messages("system", [AgentMessage.user("runtime message")])
+
+
+def test_openai_adapter_rejects_image_content_in_tool_messages():
+    adapter = OpenAICompatibleAdapter(model="test", api_key="key")
+    tool_message = default_convert_to_llm(
+        [
+            AgentMessage.tool_result(
+                tool_call_id="call-image",
+                name="inspect_image",
+                content=[TextContent("description"), ImageContent(url="https://example.test/image.png")],
+            )
+        ]
+    )[0]
+
+    with pytest.raises(ValueError, match="Chat Completions tool messages support text content only"):
+        adapter._messages("", [tool_message])

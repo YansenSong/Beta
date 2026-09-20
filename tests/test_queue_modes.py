@@ -106,6 +106,23 @@ async def test_continue_from_assistant_can_consume_follow_up_without_steering():
     assert _user_texts(model.calls[1]) == ["start", "resume with this"]
 
 
+async def test_continue_from_assistant_rejects_empty_message_providers():
+    model = ScriptedModelAdapter([AgentMessage.assistant("final")])
+    agent = Agent(
+        model=model,
+        config=AgentConfig(
+            get_steering_messages=lambda: [],
+            get_follow_up_messages=lambda: [],
+        ),
+    )
+    await agent.run("start")
+
+    with pytest.raises(ValueError, match="Cannot continue from an assistant"):
+        agent.continue_stream()
+
+    assert len(model.calls) == 1
+
+
 def test_queue_clear_helpers_and_has_queued_messages():
     agent = Agent(model=ScriptedModelAdapter([]))
     agent.steer("s")

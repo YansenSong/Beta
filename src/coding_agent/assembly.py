@@ -197,6 +197,12 @@ async def create_coding_agent(options: CodingAgentOptions) -> CodingAgentRuntime
     if not has_transcript_state:
         baseline = create_initial_system_message(system_prompt, tools)
         if baseline is not None:
+            if session.entries:
+                # Mark migration snapshots so reconstruction can keep them ahead
+                # of an older compaction summary while the Session stays append-only.
+                baseline = baseline.copy(
+                    metadata={**baseline.metadata, "legacy_migration_baseline": True}
+                )
             # New sessions and legacy-session migration points are durable from the
             # outset, before the first request or any extension event can occur.
             session.append_message(baseline)

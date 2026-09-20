@@ -100,7 +100,7 @@ observability state ≠ conversation state
 
 progress 仅在 handler 执行期间有效：Tool settle 后 Runtime 会关闭该 `ToolExecutionContext` 的 update gate，后台任务迟到调用 `progress()` 会被静默忽略，保证 `tool_execution_end` 之后不再出现该 Tool 的 update。
 
-`ToolResult.content` 可返回字符串、text/image block 或混合内容，`usage` 可携带通用统计 metadata；`after_tool_call` 也能覆盖这两项。最终 Tool Message 保留 rich content，usage 与其他结果信息保存在 session metadata 中。
+`ToolResult.content` 可返回字符串、text/image block 或混合内容，`usage` 可携带通用统计 metadata；`after_tool_call` 也能覆盖这两项。最终 Tool Message 保留 rich content，usage 与其他结果信息保存在 session metadata 中。不过 Runtime/Session 能保存图片，不代表每个 Provider 都接受 tool-role 图片：当前 OpenAI-compatible Chat Completions adapter 会拒绝带图片的 tool message，因为[官方 tool-message schema 只支持 text content parts](https://developers.openai.com/api/reference/resources/chat)。
 
 ## 6. 错误统一从 Tool Result 出口返回
 

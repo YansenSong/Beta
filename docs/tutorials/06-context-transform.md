@@ -64,6 +64,8 @@ ModelAdapter.stream()
 
 默认情况下，它不会替换 Runtime 中的 canonical history。
 
+系统消息也属于这个临时视图：Agent 会在转换 Provider message 前，从 transformed messages 重放 system text，因此临时追加、修改或移除 system message 会影响本轮请求但不会改写 transcript。顶层可执行 tools 仍取自 `AgentContext.tools`，transform hook 不能靠声明伪造 Runtime 不具备的 handler。
+
 对应源码：[`../../src/beta_agent/agent.py`](../../src/beta_agent/agent.py) 的 `_stream_assistant()`。
 
 ## 3. 这层可以做什么
