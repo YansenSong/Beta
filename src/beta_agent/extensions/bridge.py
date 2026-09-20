@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from ..agent import Agent
 from ..cancellation import CancellationToken, call_with_optional_cancellation
@@ -23,115 +22,41 @@ class ExtensionHost:
     _previous_before: Any
     _previous_transform: Any
     _previous_tools: list[Tool]
-    _active_outer: EventStream[list[AgentMessage]] | None = None
+    _unsubscribe: Callable[[], None]
+    _closed: bool = False
 
     def stream(self, prompt) -> EventStream[list[AgentMessage]]:
-        # 同步创建 inner stream，让调用方在 outer host task 被调度之前，
-        # 就能看到 Agent 的 active-run guard。
-        self._ensure_outer_idle()
-        inner = self.agent.stream(prompt)
-
-        async def drive(emit):
-            try:
-                async for event in inner:
-                    await self._handle_event(event)
-                    await emit(event)
-                return await inner.result()
-            except asyncio.CancelledError:
-                # 只取消 host wrapper 时，绝不能让底层 Agent 的 provider/tool task 继续运行。
-                self.agent.abort()
-                await inner.wait()
-                raise
-
-        outer = EventStream(drive, on_cancel=lambda _: self.agent.abort())
-        self._active_outer = outer
-
-        def cancel_inner_if_needed(completed: EventStream[list[AgentMessage]]) -> None:
-            if completed.cancel_requested and not inner.done:
-                self.agent.abort()
-            if self._active_outer is completed:
-                self._active_outer = None
-
-        outer.add_done_callback(cancel_inner_if_needed)
-        return outer
+        return self.agent.stream(prompt)
 
     async def run(self, prompt) -> list[AgentMessage]:
         return await self.stream(prompt).result()
 
     def continue_stream(self) -> EventStream[list[AgentMessage]]:
-        self._ensure_outer_idle()
-        inner = self.agent.continue_stream()
-
-        async def drive(emit):
-            try:
-                async for event in inner:
-                    await self._handle_event(event)
-                    await emit(event)
-                return await inner.result()
-            except asyncio.CancelledError:
-                self.agent.abort()
-                await inner.wait()
-                raise
-
-        outer = EventStream(drive, on_cancel=lambda _: self.agent.abort())
-        self._active_outer = outer
-        outer.add_done_callback(
-            lambda completed: self._on_outer_done(completed, inner)
-        )
-        return outer
-
-    def _on_outer_done(self, completed: EventStream[list[AgentMessage]], inner: EventStream[list[AgentMessage]]) -> None:
-        if completed.cancel_requested and not inner.done:
-            self.agent.abort()
-        if self._active_outer is completed:
-            self._active_outer = None
-
-    def _ensure_outer_idle(self) -> None:
-        if self._active_outer is not None and not self._active_outer.done:
-            raise RuntimeError("Agent is already processing. Use steer()/follow_up() or wait_for_idle().")
+        return self.agent.continue_stream()
 
     def abort(self) -> None:
         self.agent.abort()
 
     async def wait_for_idle(self) -> None:
         await self.agent.wait_for_idle()
-        outer = self._active_outer
-        if outer is not None:
-            await outer.wait()
 
     @property
     def is_running(self) -> bool:
-        return self.agent.is_running or (self._active_outer is not None and not self._active_outer.done)
+        return self.agent.is_running
 
     async def run_command(self, input_: str) -> None:
         await self.runner.run_command(input_)
 
-    async def _handle_event(self, event: AgentEvent) -> None:
-        if event.type == "message_end" and event.message is not None:
-            try:
-                if self.persist_messages:
-                    self.runner.session.append_message(event.message)
-                await self.runner.emit("message_end", MessageEndEvent(event.message))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                # Persistence/lifecycle wiring 属于 infrastructure，
-                # 不同于 ExtensionRunner 会隔离处理的普通 extension handler。
-                self.agent._fail_from_bridge(exc)
-        elif event.type == "turn_end" and event.message is not None:
-            try:
-                await self.runner.emit("turn_end", TurnEndEvent(event.message, list(event.tool_results or [])))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self.agent._fail_from_bridge(exc)
-
     def close(self) -> None:
+        if self._closed:
+            return
         if self.is_running:
             self.agent.abort()
+        self._unsubscribe()
         self.agent.config.before_tool_call = self._previous_before
         self.agent.config.transform_context = self._previous_transform
         self.agent.context.tools = list(self._previous_tools)
+        self._closed = True
 
 
 def bind_extensions(agent: Agent, runner: ExtensionRunner, *, persist_messages: bool = True) -> ExtensionHost:
@@ -185,6 +110,16 @@ def bind_extensions(agent: Agent, runner: ExtensionRunner, *, persist_messages: 
 
     agent.config.before_tool_call = before_tool_call
     agent.config.transform_context = transform_context
+
+    async def on_agent_event(event: AgentEvent, cancellation: CancellationToken) -> None:
+        if event.type == "message_end" and event.message is not None:
+            if persist_messages:
+                runner.session.append_message(event.message)
+            await runner.emit("message_end", MessageEndEvent(event.message))
+        elif event.type == "turn_end" and event.message is not None:
+            await runner.emit("turn_end", TurnEndEvent(event.message, list(event.tool_results or [])))
+
+    unsubscribe = agent.subscribe(on_agent_event)
     return ExtensionHost(
         agent=agent,
         runner=runner,
@@ -192,4 +127,5 @@ def bind_extensions(agent: Agent, runner: ExtensionRunner, *, persist_messages: 
         _previous_before=previous_before,
         _previous_transform=previous_transform,
         _previous_tools=original_tools,
+        _unsubscribe=unsubscribe,
     )

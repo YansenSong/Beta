@@ -88,15 +88,18 @@ Assistant Message 不是只看有没有 Tool Call。
 
 Beta 会把这种截断调用变成失败的 Tool Result，而不是冒险运行不完整参数。
 
-### EventStream 和 Assistant partial 如何衔接
+### Agent subscriber、EventStream 和 Assistant partial 如何衔接
 
-[`EventStream`](../../src/beta_agent/events.py) 内部是一条 `asyncio.Queue` 加一个 runner task。`emit()` 入队后主动 `await asyncio.sleep(0)`，让 UI 或 Extension 有机会在 producer 继续推进前观察事件：
+[`EventStream`](../../src/beta_agent/events.py) 内部是一条 `asyncio.Queue` 加一个 runner task。Agent 对外发布每个事件时，会先按注册顺序 await `Agent.subscribe(listener)` callbacks，再调用 EventStream 的 `emit()`：
 
 ```python
-async def emit(event: AgentEvent) -> None:
-    await self._queue.put(event)
-    await asyncio.sleep(0)
+async def publish(event: AgentEvent) -> None:
+    for listener in listeners:
+        await listener(event, cancellation)
+    await event_stream_emit(event)
 ```
+
+订阅者适合承担需要先于下一条 Runtime event 完成的工作，例如 Extension `message_end` / `turn_end` dispatch 和 Session persistence。`agent_end` subscribers 完成后 run 才 settle，`wait_for_idle()` 也会等到这个边界。EventStream 则继续为 CLI/UI 提供异步迭代接口；它不需要通过主动让出调度来保证 bridge 顺序。
 
 在 [`Agent._stream_assistant()`](../../src/beta_agent/agent.py) 中，`ModelEvent.partial` 每次都替换当前 Assistant，并发出副本：
 

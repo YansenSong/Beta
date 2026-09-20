@@ -2,7 +2,7 @@
 
 一个参考 Pi Agent 架构思想，并结合 `learn-pi-agent` 教程第 00～12 章设计实现的轻量级 Python 智能体框架。
 
-这个仓库的目标不是把 Pi 的 TypeScript 源码逐行翻译成 Python，而是保留其中最重要的架构边界，并用更符合 Python 使用习惯的方式重新组织：异步事件驱动的 Agent Loop、模型适配层、Tool Runtime、Steering / Follow-up 队列、Context Hook、可分支 Session、追加式 Compaction，以及按需加载的 Skill 机制。
+这个仓库的目标不是把 Pi 的 TypeScript 源码逐行翻译成 Python，而是保留其中最重要的架构边界，并用更符合 Python 使用习惯的方式重新组织：异步事件驱动的 Agent Loop、模型适配层、Tool Runtime、Steering / Follow-up 队列、Context Hook、可分支 Session、追加式 Compaction，以及按需加载的 Skill 机制。System instruction 与模型可见的 Tool 声明也属于可重放的 transcript 状态；运行时可执行 Tool 则仍由独立 registry 持有。
 
 ## 当前已经实现
 
@@ -13,7 +13,11 @@
 - 完整 Tool 生命周期：lookup → prepare arguments → validate → before hook → execute → after hook → Tool Result；
 - 多 Tool 并行执行，同时保持确定性的 history 写入顺序；
 - 不同检查点的 **Steering** 与 **Follow-up** 队列；
-- `transform_context`、`prepare_next_turn` 和 graceful stop 等扩展 Hook；
+- 默认逐条消费、可选一次消费全部的 Steering / Follow-up QueueMode；
+- `transform_context`、支持 Context / 消息 / 模型更新的 `prepare_next_turn` 和 graceful stop 等扩展 Hook；
+- transcript-native system/tool state、Session v3 持久化与 Provider 兼容投影；
+- 可返回文本/图片内容和 usage 的 ToolResult，以及受生命周期约束的 Tool progress；
+- Agent awaited event subscribers，供 Extension dispatch 与 Session persistence 在 run 结束前完成；
 - Append-only 的 **SessionTree**，支持分支和 JSONL 持久化；
 - Branch-local 的 **CompactionEntry**，压缩 Context 但不删除原始历史；
 - **SkillCatalog**，只向 system prompt 注入 Skill metadata，正文按需通过普通 Tool 读取。
@@ -77,6 +81,8 @@ agent.follow_up("最后再总结成三点")
 
 Steering 不会抢占当前正在执行的 turn。当前 assistant message 以及它触发的 Tool batch 会先完整执行，等 `turn_end` 以后，Steering 才会作为普通 user message 注入下一轮。
 
+默认情况下，Steering 和 Follow-up 各自在合法检查点逐条消费最早的一条；可通过 `AgentConfig.steering_mode` / `follow_up_mode` 设为 `"all"`，一次消费该队列中的全部消息。
+
 Follow-up 的检查点更晚：只有当 Agent 本来已经准备结束当前 run 时，才会检查是否还有后续消息。如果存在 Follow-up，则继续开启下一轮，而不是立即 `agent_end`。
 
 这样可以保证每个 turn 的历史始终保持完整和自洽。
@@ -93,6 +99,8 @@ session.save_jsonl("session.jsonl")
 ```
 
 Session 内部保存的是一棵 append-only 的历史树，但 Agent 每次实际运行仍然只接收当前 active branch 对应的线性 `Message[]`。
+
+System instruction 与工具声明的增删也作为 system-message delta 写入 transcript；新 Coding Agent session 会持久化初始 baseline，旧 v1/v2 session 在当前恢复点追加迁移 baseline。Session v3 保留了这些状态以及 rich Tool Result 数据。
 
 调用 `branch(entry.id)` 时不会删除旧历史，只是把当前 `leaf_id` 移动到指定节点。之后产生的新消息会从这个节点继续形成新的分支。
 

@@ -217,7 +217,6 @@ async def _drive(self, runner):
     self._started = True
     async def emit(event):
         await self._queue.put(event)
-        await asyncio.sleep(0)
 
     try:
         return await runner(emit)
@@ -232,6 +231,8 @@ lambda emit: self._run(prompts, emit, token)
 ~~~
 
 所以 EventStream 实际上在一个任务里运行整个 Agent。
+
+事件顺序不依赖 `emit()` 主动 `sleep(0)` 让消费者抢调度。Agent 在写入 EventStream 前会先 await 注册的 event subscribers；Extension dispatch 和 Session persistence 因而是 producer 的显式生命周期步骤，EventStream 只负责向外部调用方排队并提供迭代接口。
 
 当调用 stream.cancel() 时，它会：
 

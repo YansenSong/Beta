@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 from .cancellation import CancellationToken, call_with_optional_cancellation
-from .types import AgentContext, AgentEvent, AgentMessage, ToolBatchResult, ToolCall, ToolResult
+from .types import AgentContent, AgentContext, AgentEvent, AgentMessage, ToolBatchResult, ToolCall, ToolResult
+from .messages import normalize_content_blocks
 
 ArgsT = TypeVar("ArgsT", bound=BaseModel)
 Emit = Callable[[AgentEvent], Awaitable[None]]
@@ -26,11 +28,12 @@ class BeforeToolCallDecision:
 
 @dataclass(slots=True)
 class AfterToolCallPatch:
-    content: str | None = None
+    content: str | AgentContent | Sequence[AgentContent] | None = None
     details: Any = None
     replace_details: bool = False
     is_error: bool | None = None
     terminate: bool | None = None
+    usage: dict[str, Any] | None = None
 
 
 @dataclass(slots=True, init=False)
@@ -39,6 +42,8 @@ class ToolExecutionContext:
     tool_name: str
     cancellation: CancellationToken
     _emit: Emit
+    _accepting_updates: bool
+    _update_lock: asyncio.Lock
 
     def __init__(
         self,
@@ -74,18 +79,27 @@ class ToolExecutionContext:
         self.tool_name = tool_name
         self.cancellation = token
         self._emit = emit_value
+        self._accepting_updates = True
+        self._update_lock = asyncio.Lock()
 
     async def progress(self, partial_result: Any) -> None:
         # 长耗时 Tool 可以主动上报中间状态；这些 update 只用于 UI/Tracing，不写入消息历史。
-        self.cancellation.throw_if_cancelled()
-        await self._emit(
-            AgentEvent(
-                type="tool_execution_update",
-                tool_call_id=self.tool_call_id,
-                tool_name=self.tool_name,
-                result=partial_result,
+        async with self._update_lock:
+            if not self._accepting_updates:
+                return
+            self.cancellation.throw_if_cancelled()
+            await self._emit(
+                AgentEvent(
+                    type="tool_execution_update",
+                    tool_call_id=self.tool_call_id,
+                    tool_name=self.tool_name,
+                    result=partial_result,
+                )
             )
-        )
+
+    async def close_updates(self) -> None:
+        async with self._update_lock:
+            self._accepting_updates = False
 
 
 @dataclass(slots=True)
@@ -386,16 +400,14 @@ class ToolRuntime:
         cancellation: CancellationToken,
     ) -> _Finalized:
         cancellation.throw_if_cancelled()
+        execution_context = ToolExecutionContext(
+            prepared.call.id,
+            prepared.call.name,
+            emit,
+            cancellation=cancellation,
+        )
         try:
-            result = await prepared.tool.execute(
-                prepared.args,
-                ToolExecutionContext(
-                    prepared.call.id,
-                    prepared.call.name,
-                    emit,
-                    cancellation=cancellation,
-                ),
-            )
+            result = await prepared.tool.execute(prepared.args, execution_context)
             is_error = False
         except asyncio.CancelledError:
             # batch boundary 会把这里转换成 aborted Tool Result；
@@ -407,6 +419,8 @@ class ToolRuntime:
                 details={"stage": "tool_execute", "exception_type": type(exc).__name__},
             )
             is_error = True
+        finally:
+            await execution_context.close_updates()
 
         # after hook 位于 Tool 真正执行之后、tool_execution_end 事件之前，
         # 可以统一补充 metadata、改写展示内容或设置 terminate，而不用侵入具体 Tool。
@@ -439,13 +453,15 @@ class ToolRuntime:
                 )
             if patch:
                 if patch.content is not None:
-                    result.content = patch.content
+                    result.content = normalize_content_blocks(patch.content)
                 if patch.replace_details:
                     result.details = patch.details
                 if patch.terminate is not None:
                     result.terminate = patch.terminate
                 if patch.is_error is not None:
                     is_error = patch.is_error
+                if patch.usage is not None:
+                    result.usage = dict(patch.usage)
 
         return _Finalized(prepared.call, result, is_error)
 
@@ -468,7 +484,7 @@ class ToolRuntime:
                 tool_name=item.call.name,
                 args=item.call.arguments,
                 result=item.result,
-                error=item.result.content if item.is_error else None,
+                error=item.result.content.text if item.is_error else None,
             )
         )
 
@@ -485,6 +501,7 @@ class ToolRuntime:
                 added_tool_names=item.result.added_tool_names,
                 terminate=item.result.terminate,
                 aborted=item.aborted,
+                usage=item.result.usage,
             )
             await emit(AgentEvent(type="message_start", message=message))
             await emit(AgentEvent(type="message_end", message=message))

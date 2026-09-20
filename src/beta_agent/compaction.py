@@ -45,7 +45,10 @@ async def compact_session(
 
     # 只摘要切点以前的旧消息。原 Session Entry 不会删除，摘要只是新的 append-only 记录。
     prefix_messages = [session_message(e) for e in prefix_entries]
-    summary = summarize(prefix_messages)
+    summary_messages = [message for message in prefix_messages if message.role != "system"]
+    if not summary_messages:
+        return None
+    summary = summarize(summary_messages)
     if inspect.isawaitable(summary):
         summary = await summary
 

@@ -100,6 +100,6 @@ api.on("tool_call", guard)       # 拦截非只读 bash
 api.on("context", inject_context) # 临时追加 PLAN_MODE_PROMPT
 ```
 
-所以工具集合是 Runtime 状态，planning prompt 只是每次模型调用前的 view，不会污染 Session。
+所以工具集合是 Runtime 状态，planning prompt 只是每次模型调用前的 view，不会污染 Session。Tool 集合改变后，Runtime 会在下一次模型请求前把模型可见 declaration 差异写成 transcript system delta；临时提示与 durable tool state 是两个不同层次。
 
 Subagent 则注册一个标准 `ExtensionTool`。handler 从 `ctx.config.services["child_model_factory"]` 取模型，创建全新的 `SessionTree` 和 `Agent`，执行 `child.run(args.task)`，最后只把末条 Assistant 文本放进父级 `ToolResult`。父级从未拿到 child 的 context 对象，这就是隔离并非文档约定、而是对象所有权上的事实。

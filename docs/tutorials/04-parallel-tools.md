@@ -111,6 +111,8 @@ Beta 并发执行后通过 `asyncio.gather()` 收集结果。
 
 每个执行结束时可以立即发 end event；而 gather 返回值仍按输入 awaitable 的位置排列，因此最后 commit history 时可以恢复 source order。
 
+即便有并行执行，单个 Tool 的局部生命周期也有硬边界：`ToolExecutionContext.close_updates()` 与 `progress()` 使用同一把锁，Tool settle 后迟到的 progress 会被忽略；最终 rich Tool Result 仍按模型原始调用顺序提交。详见[Tool Runtime 的生命周期与结果格式](03-tool-runtime.md)。
+
 ## 5. 什么时候必须退回 sequential
 
 Beta 支持：

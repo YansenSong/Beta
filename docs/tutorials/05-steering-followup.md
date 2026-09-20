@@ -157,7 +157,9 @@ if follow_up:
 break
 ```
 
-`_MessageQueue.drain()` 会先复制再清空 deque，所以一条消息只进入一次 checkpoint。若配置了外部 `get_steering_messages` / `get_follow_up_messages`，两个 drain 方法会改为调用 provider，但循环位置完全不变。
+`AgentConfig.steering_mode` 与 `follow_up_mode` 分别控制队列消费方式，默认都是 `"one-at-a-time"`：每个合法 checkpoint 只取最旧的一条，其余消息留到后续同类 checkpoint。设为 `"all"` 则保持一次 drain 全部消息的行为。外部 `get_steering_messages` / `get_follow_up_messages` provider 返回的消息也先进入对应队列，再按相同 mode 消费。
+
+若 history 最后一条是 Assistant，`continue_stream()` 仍默认拒绝继续；但只要有 queued Steering / Follow-up，或配置了对应的外部 message provider，就可以恢复运行。优先级不变：可用 Steering 先进入下一轮，Follow-up 只在 Agent 本来准备结束时读取。
 
 ## 7. 掌握标准
 

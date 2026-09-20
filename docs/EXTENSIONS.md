@@ -20,6 +20,8 @@ AgentConfig hooks + EventStream + active tools
 
 Agent Loop、ToolRuntime、Message protocol 都仍然只有一套。
 
+`ExtensionHost` 是 facade；`bind_extensions()` 将 lifecycle handlers 和 Session persistence 注册为 Agent awaited subscriber。Agent 等它们完成后才把事件交给外部 EventStream，因此 host 不需要消费再转发另一条 stream。
+
 通用 Extension Runtime 位于：
 
 ```text
@@ -82,7 +84,7 @@ messages = await host.run("你好")
 
 - `Agent`：稳定 Agent Loop；
 - `ExtensionRunner`：registration、dispatch、错误隔离；
-- `ExtensionHost`：把 Runner 接到现有 Core seam；
+- `ExtensionHost`：把 Runner 接到现有 Core seam，并提供委托式运行 facade；
 - `SessionTree`：为 Extension 提供当前会话上下文。
 
 ## 4. 原子加载
@@ -115,6 +117,8 @@ turn_end
 ### Observe：`message_end` / `turn_end`
 
 按注册顺序执行。单个 handler 失败会被记录，但不会阻断后续 handler。
+
+这类普通 Extension handler 的隔离由 `ExtensionRunner` 完成；subscriber 中的 Session persistence 等 infrastructure failure 会进入 Agent 的 `event_listener` error lifecycle。
 
 ### Intercept：`tool_call`
 
@@ -393,6 +397,7 @@ tool_call block 短路
 context transform 顺序组成 pipeline
 Extension Tool 继续走 Core ToolRuntime
 active tools 对下一次模型调用立即生效
+工具 declaration 变化在请求前作为 transcript delta 持久化
 Parent / Child Agent history 隔离
 Coding Agent product extension 不反向污染 beta_agent Core
 ```

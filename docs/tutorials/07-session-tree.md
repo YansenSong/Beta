@@ -145,6 +145,10 @@ entry
 
 Beta 的 `save_jsonl()` / `load_jsonl()` 就是一个最小持久化实现。
 
+当前 Session format v3 除普通对话外，也保存 system message 的 `tools_added` / `tools_removed` delta、rich Tool Result content 和新增 metadata。初始 system/tool baseline 与后续变化因此可以沿 branch replay，而不是从当前进程配置猜测历史状态。
+
+旧 v1/v2 文件仍可加载。Coding Agent 恢复到没有 transcript state 的 legacy leaf 时，会在当前 leaf 追加由当前 system prompt/tool registry 构成的 migration baseline；旧 entries 与 ids 不会被改写。迁移点之后的新历史即可自包含。
+
 ## 7. Session 与 Context Transformation 的先后
 
 两层不要混淆：

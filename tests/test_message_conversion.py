@@ -125,7 +125,7 @@ def test_v1_session_string_content_loads_and_new_format_writes_blocks(tmp_path):
     session.save_jsonl(new_path)
     lines = [json.loads(line) for line in new_path.read_text(encoding="utf-8").splitlines()]
     assert isinstance(lines[0]["payload"]["content"], list)
-    assert lines[-1]["_meta"]["format_version"] == 2
+    assert lines[-1]["_meta"]["format_version"] == 3
     restored = SessionTree.load_jsonl(new_path).reconstruct_messages()[0]
     assert restored.text == "hello"
     assert isinstance(restored.content[1], ImageContent)

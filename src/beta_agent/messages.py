@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -17,6 +19,23 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+
+
+@dataclass(slots=True, frozen=True)
+class ToolDeclaration:
+    """可放入 transcript/session 的模型可见工具定义，不含可执行 runtime state。"""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parameters", deepcopy(self.parameters))
+
+
+@dataclass(slots=True, frozen=True)
+class ToolReference:
+    name: str
 
 
 @dataclass(slots=True)
@@ -86,7 +105,9 @@ class ContentBlocks(list[AgentContent]):
         return self.text.splitlines(*args, **kwargs)
 
 
-def _content_blocks(value: str | AgentContent | list[AgentContent] | tuple[AgentContent, ...] | None) -> ContentBlocks:
+def normalize_content_blocks(
+    value: str | AgentContent | Sequence[AgentContent] | None,
+) -> ContentBlocks:
     if value is None:
         return ContentBlocks()
     if isinstance(value, str):
@@ -123,11 +144,15 @@ class AgentMessage:
     is_error: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=utc_now_iso)
+    tools_added: list[ToolDeclaration] = field(default_factory=list)
+    tools_removed: list[ToolReference] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.content = _content_blocks(self.content)
+        self.content = normalize_content_blocks(self.content)
         self.tool_calls = list(self.tool_calls)
         self.metadata = dict(self.metadata)
+        self.tools_added = list(self.tools_added)
+        self.tools_removed = list(self.tools_removed)
 
     @property
     def text(self) -> str:
@@ -138,8 +163,21 @@ class AgentMessage:
         return cls(role="user", content=[TextContent(text)], metadata=metadata)
 
     @classmethod
-    def system(cls, text: str, **metadata: Any) -> "AgentMessage":
-        return cls(role="system", content=[TextContent(text)], metadata=metadata)
+    def system(
+        cls,
+        text: str,
+        *,
+        tools_added: Sequence[ToolDeclaration] = (),
+        tools_removed: Sequence[ToolReference] = (),
+        **metadata: Any,
+    ) -> "AgentMessage":
+        return cls(
+            role="system",
+            content=[TextContent(text)],
+            metadata=metadata,
+            tools_added=list(tools_added),
+            tools_removed=list(tools_removed),
+        )
 
     @classmethod
     def assistant(
@@ -165,7 +203,7 @@ class AgentMessage:
         *,
         tool_call_id: str,
         name: str,
-        content: str | list[AgentContent],
+        content: str | AgentContent | Sequence[AgentContent],
         is_error: bool = False,
         **metadata: Any,
     ) -> "AgentMessage":

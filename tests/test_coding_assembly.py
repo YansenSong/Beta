@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
 from beta_agent import Message, ScriptedModelAdapter, Tool, ToolCall, ToolResult
+from beta_agent.transcript import get_current_tool_declarations
 from beta_agent.extensions import ExtensionTool
 from coding_agent import (
     CodingAgentOptions,
@@ -118,9 +120,9 @@ async def test_host_persists_once_save_reload_and_resume(tmp_path: Path):
         )
     )
     await first.run("first question")
-    assert len(first.session.entries) == 2
+    assert len(first.session.entries) == 3  # durable system/tool baseline + two run messages
     await first.save_session()
-    assert len(first.session.entries) == 2, "save_session must not append agent.messages a second time"
+    assert len(first.session.entries) == 3, "save_session must not append agent.messages a second time"
     first.close()
 
     seen: list[str] = []
@@ -139,17 +141,72 @@ async def test_host_persists_once_save_reload_and_resume(tmp_path: Path):
             extensions=[observe],
         )
     )
-    assert [message.content for message in resumed.agent.messages] == ["first question", "first answer"]
+    assert [message.role for message in resumed.agent.messages] == ["system", "user", "assistant"]
+    assert [message.text for message in resumed.agent.messages[-2:]] == ["first question", "first answer"]
     assert seen == []
     await resumed.run("continue question")
     assert seen == ["continue question", "continued answer"]
-    assert [message.content for message in resumed.session.reconstruct_messages()] == [
+    assert [message.text for message in resumed.session.reconstruct_messages()][-4:] == [
         "first question",
         "first answer",
         "continue question",
         "continued answer",
     ]
     resumed.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_v2_session_loads_and_appends_durable_migration_baseline(tmp_path: Path):
+    session_path = tmp_path / "legacy.jsonl"
+    entries = [
+        {
+            "id": "legacy-user",
+            "parent_id": None,
+            "timestamp": "2024-01-01T00:00:00+00:00",
+            "type": "message",
+            "payload": {"role": "user", "content": "old question"},
+        },
+        {
+            "id": "legacy-assistant",
+            "parent_id": "legacy-user",
+            "timestamp": "2024-01-01T00:00:01+00:00",
+            "type": "message",
+            "payload": {"role": "assistant", "content": "old answer"},
+        },
+    ]
+    rows = [
+        *entries,
+        {"_meta": {"leaf_id": "legacy-assistant", "format_version": 2}},
+    ]
+    session_path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    runtime = await create_coding_agent(
+        CodingAgentOptions(
+            cwd=tmp_path,
+            model=ScriptedModelAdapter([Message.assistant("resumed answer")]),
+            session_file=session_path,
+        )
+    )
+    assert [message.text for message in runtime.agent.messages[:2]] == ["old question", "old answer"]
+    assert runtime.agent.messages[-1].role == "system"
+    assert "Current working directory" in runtime.agent.system_prompt
+    assert {item.name for item in get_current_tool_declarations(runtime.agent.messages)} == {
+        "read_file",
+        "write_file",
+        "edit",
+        "grep",
+        "bash",
+    }
+
+    await runtime.run("new question")
+    assert [message.text for message in runtime.session.reconstruct_messages()][-2:] == [
+        "new question",
+        "resumed answer",
+    ]
+    await runtime.save_session()
+    saved = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
+    assert saved[-1]["_meta"]["format_version"] == 3
+    runtime.close()
 
 
 @pytest.mark.asyncio
@@ -169,12 +226,12 @@ async def test_optional_compaction_replaces_agent_context_and_survives_reload(tm
     )
     await runtime.run("u1")
     await runtime.run("u2")
-    assert len(runtime.session.entries) == 4
-    await runtime.save_session()
     assert len(runtime.session.entries) == 5
+    await runtime.save_session()
+    assert len(runtime.session.entries) == 6
     assert runtime.session.entries[-1].type == "compaction"
-    assert [message.role for message in runtime.agent.messages] == ["system", "user", "assistant"]
-    assert "summary: u1,a1" in runtime.agent.messages[0].content
+    assert [message.role for message in runtime.agent.messages] == ["system", "system", "user", "assistant"]
+    assert "summary: u1,a1" in runtime.agent.messages[1].text
     assert [message.content for message in runtime.session.reconstruct_messages()][-2:] == ["u2", "a2"]
     runtime.close()
 
@@ -185,7 +242,7 @@ async def test_optional_compaction_replaces_agent_context_and_survives_reload(tm
             session_file=session_path,
         )
     )
-    assert restored.agent.messages[0].role == "system"
-    assert "summary: u1,a1" in restored.agent.messages[0].content
+    assert [message.role for message in restored.agent.messages[:2]] == ["system", "system"]
+    assert "summary: u1,a1" in restored.agent.messages[1].text
     assert [message.content for message in restored.agent.messages[-2:]] == ["u2", "a2"]
     restored.close()

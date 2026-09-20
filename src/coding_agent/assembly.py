@@ -12,6 +12,7 @@ from beta_agent.model import ModelAdapter
 from beta_agent.session import SessionTree
 from beta_agent.skills import Skill, SkillCatalog
 from beta_agent.tools import Tool
+from beta_agent.transcript import create_initial_system_message
 from .prompt import build_coding_system_prompt
 from .tools import create_coding_tools
 
@@ -187,6 +188,20 @@ async def create_coding_agent(options: CodingAgentOptions) -> CodingAgentRuntime
         prefix=options.system_prompt_prefix,
         append=options.append_system_prompt,
     )
+    has_transcript_state = any(
+        message.role == "system"
+        and not message.metadata.get("compaction_entry_id")
+        and (message.text or message.tools_added or message.tools_removed)
+        for message in initial_messages
+    )
+    if not has_transcript_state:
+        baseline = create_initial_system_message(system_prompt, tools)
+        if baseline is not None:
+            # New sessions and legacy-session migration points are durable from the
+            # outset, before the first request or any extension event can occur.
+            session.append_message(baseline)
+            initial_messages = session.reconstruct_messages()
+
     agent = Agent(model=options.model, system_prompt=system_prompt, tools=tools, messages=initial_messages)
     host = bind_extensions(agent, runner, persist_messages=True)
     return CodingAgentRuntime(

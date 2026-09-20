@@ -33,6 +33,7 @@ Beta 在 [`../../src/beta_agent/messages.py`](../../src/beta_agent/messages.py) 
 - `AgentMessage`
 - `ToolCall`
 - `ToolResult`
+- `ToolDeclaration` / `ToolReference`：transcript 中可持久化的模型可见工具状态，不含可执行 handler。
 
 `Message` 仍然是 `AgentMessage` 的兼容 alias。消息内容现在以 text/image content blocks 表达，文本读取使用 `message.text`。
 
@@ -47,14 +48,16 @@ tool 最后返回了什么
 
 而不是 Provider 把这些信息叫做哪个字段。
 
+System prompt 增量和模型可见工具的添加/移除也由 `AgentMessage(role="system")` 记入 transcript。canonical `messages` 是可重放的模型状态历史，`AgentContext.tools` 则保存当前实际可执行的 Python Tool。到 Provider boundary 再把 transcript collapse 成当前 Adapter 兼容的 system prompt、普通消息和顶层 tools。
+
 因此框架内部可以一直使用统一语义：
 
 ```text
-Agent Message
+Runtime transcript + executable tool registry
      ↓
-`convert_to_llm`
+replay / provider projection
      ↓
-ProviderMessage boundary
+`convert_to_llm` → ProviderMessage boundary
      ↓
 Provider protocol
 ```
@@ -87,9 +90,10 @@ Tool Calling 正是这个分界点。
 建议依次看：
 
 1. `messages.py`：内部 AgentMessage 和 content blocks 长什么样；
-2. `provider_messages.py`：Runtime 到 Provider 的显式转换边界；
-3. `model.py`：Agent Loop 依赖什么接口；
-4. `adapters/openai_compatible.py`：Provider 差异在哪里结束。
+2. `transcript.py`：system/tool state 如何 replay、diff 和 collapse；
+3. `provider_messages.py`：Runtime 到 Provider 的显式转换边界；
+4. `model.py`：Agent Loop 依赖什么接口；
+5. `adapters/openai_compatible.py`：Provider 差异在哪里结束。
 
 阅读时注意：`Agent` 本身不应该出现大量 Provider 字段名。
 
@@ -108,9 +112,11 @@ class AgentMessage:
     is_error: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=utc_now_iso)
+    tools_added: list[ToolDeclaration] = field(default_factory=list)
+    tools_removed: list[ToolReference] = field(default_factory=list)
 ```
 
-真正越过模型边界时，[`default_convert_to_llm()`](../../src/beta_agent/provider_messages.py) 会逐条复制 Provider 需要的字段，并跳过 `role="custom"`。因此 `timestamp`、`metadata`、`stop_reason` 和 `is_error` 不会泄漏给 Provider：
+真正越过模型边界时，Agent 先从 transcript replay system text，并过滤 system-state messages；随后 [`default_convert_to_llm()`](../../src/beta_agent/provider_messages.py) 转换普通消息、跳过 `role="custom"`。因此 `timestamp`、`metadata`、`stop_reason`、`is_error` 和 tool delta 不会泄漏给 Provider：
 
 ```python
 if message.role not in {"system", "user", "assistant", "tool"}:

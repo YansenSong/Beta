@@ -33,17 +33,20 @@ factory 只在加载时执行一次。真正长期存在的是注册结果，由
 `bind_extensions()` 只把注册行为接入现有 seam：
 
 ```text
-register_tool  -> Agent active tools -> ToolRuntime
+register_tool  -> Agent executable tools -> ToolRuntime
 context        -> transform_context -> ModelAdapter
 tool_call      -> before_tool_call -> ToolRuntime
-message_end    -> ExtensionHost event forwarding -> ExtensionRunner
+message_end    -> awaited Agent subscriber -> Session + ExtensionRunner
+turn_end       -> awaited Agent subscriber -> ExtensionRunner
 ```
 
-Agent Loop 没有第二套“Extension Loop”。
+Agent Loop 没有第二套“Extension Loop”。`ExtensionHost` 只是 facade，直接委托 Agent 的 stream / continue / abort / wait；它不再消费 inner EventStream 后 re-emit outer EventStream。Agent 先 await subscribers，再公开事件，因此 message persistence 和 Extension observe 在 lifecycle 顺序中完成。
+
+普通 Extension handler 的异常仍由 `ExtensionRunner` 记录并隔离，按约定继续通知其他 handlers。Session persistence 等 subscriber infrastructure failure 则进入 Agent 的 `event_listener` error lifecycle；它不会被静默吞掉，也不依赖 `asyncio.sleep(0)`。
 
 ## Active Tools
 
-Extension 通过 `ctx.get_active_tools()` / `ctx.set_active_tools()` 修改下一次模型可见的 Tool。Runner 只知道 Tool 名字，真正的名字解析和运行中 Agent Tool 集合更新由 bridge 绑定。
+Extension 通过 `ctx.get_active_tools()` / `ctx.set_active_tools()` 修改下一次模型可见的 Tool。Runner 只知道 Tool 名字，真正的名字解析和运行中 Agent 可执行 Tool 集合更新由 bridge 绑定；下一次模型请求前 Agent 会把变化写成 transcript tool-state delta。
 
 这使 Extension 不需要依赖 Harness 内部怎样组织 Tool registry。
 

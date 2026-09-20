@@ -98,6 +98,10 @@ tool_execution_update
 observability state ≠ conversation state
 ```
 
+progress 仅在 handler 执行期间有效：Tool settle 后 Runtime 会关闭该 `ToolExecutionContext` 的 update gate，后台任务迟到调用 `progress()` 会被静默忽略，保证 `tool_execution_end` 之后不再出现该 Tool 的 update。
+
+`ToolResult.content` 可返回字符串、text/image block 或混合内容，`usage` 可携带通用统计 metadata；`after_tool_call` 也能覆盖这两项。最终 Tool Message 保留 rich content，usage 与其他结果信息保存在 session metadata 中。
+
 ## 6. 错误统一从 Tool Result 出口返回
 
 Tool not found、参数校验失败、before hook block、handler exception，来源不同，但对于 Agent Loop 都可以统一成：
@@ -140,7 +144,7 @@ class Tool(Generic[ArgsT]):
 
 `_prepare()` 的真实顺序是 lookup → `prepare_arguments` → Pydantic `model_validate` → `before_tool_call`。其中任何一步失败都会返回 `_Finalized`，而不是让 handler 接到半可信参数。准备成功后 `_execute_prepared()` 才创建 `ToolExecutionContext` 并调用 `tool.execute()`。
 
-最后 `_commit()` 把内部 `_Finalized` 转成公开协议消息：`result.content` 成为 Tool Message 文本，`details`、`terminate`、`aborted` 放进 metadata，`is_error` 保留失败语义。也就是说 `_Prepared` / `_Finalized` 只活在 Runtime 内部，Agent Loop 只接触 `ToolBatchResult`。
+最后 `_commit()` 把内部 `_Finalized` 转成公开协议消息：`result.content` 原样成为 Tool Message 的 content blocks，`details`、`terminate`、`aborted` 和 `usage` 放进 metadata，`is_error` 保留失败语义。也就是说 `_Prepared` / `_Finalized` 只活在 Runtime 内部，Agent Loop 只接触 `ToolBatchResult`。
 
 ## 8. 掌握标准
 

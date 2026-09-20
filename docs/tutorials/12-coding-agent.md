@@ -46,7 +46,7 @@ finally:
     runtime.close()
 ```
 
-`runtime.agent` 仍然保留用于调试和查看状态，但常规调用不应绕过 `ExtensionHost` 直接调用它。这样 `message_end` 观察、Extension handler 和 Session persistence 会走同一条入口。
+`runtime.agent` 仍然保留用于调试和查看状态，常规调用使用 `ExtensionHost` facade 以保持产品层入口清晰。Host 直接委托 Agent 的 run / stream / continue / abort / wait API；message persistence 与 Extension event dispatch 由绑定在 Agent 上的 awaited subscriber 处理，不再通过内层/外层 EventStream 转发。
 
 ## 2. 五个 Coding Tool
 
@@ -72,7 +72,7 @@ bash        sequential  在 workspace 执行 POSIX-like shell，合并 stdout/st
 
 ## 4. Session、恢复与压缩
 
-`ExtensionHost` 在收到 `message_end` 后已经调用 `SessionTree.append_message()`。因此 `save_session()` 只负责可选 compaction 和 `SessionTree.save_jsonl()`，不能再次遍历 `agent.messages` 追加消息。
+Agent 的 awaited event subscriber 会在对应 `message_end` 对外发布前调用 `SessionTree.append_message()`。因此 `save_session()` 只负责可选 compaction 和 `SessionTree.save_jsonl()`，不能再次遍历 `agent.messages` 追加消息。Session format v3 保存 system/tool deltas 和 rich Tool Result 数据；新 session 会先持久化初始 baseline，legacy v1/v2 恢复时则在当前 leaf 追加迁移 baseline。
 
 恢复时使用：
 
@@ -84,7 +84,7 @@ session.reconstruct_messages()
 Agent(initial_messages=...)
 ```
 
-可选的 `CodingCompactionOptions` 仍然使用 Core 的 `compact_session()`：压缩记录是 append-only，旧 Entry 不删除；压缩后 facade 会用当前 branch 重建的 summary + retained tail 替换 Agent canonical messages。
+可选的 `CodingCompactionOptions` 仍然使用 Core 的 `compact_session()`：压缩记录是 append-only，旧 Entry 不删除；压缩后 facade 会用当前 branch 重建的 system/tool baseline + summary + retained tail 替换 Agent canonical messages。
 
 ## 5. 产品级 Extension
 
@@ -175,6 +175,7 @@ Chapter 12 的关键结论是：00～11 提供稳定能力，12 负责产品组�
 → 构造 RuntimeConfig.services
 → ExtensionRunner.load()
 → build_coding_system_prompt()
+→ 若缺少 transcript baseline，先将 system/tool snapshot 追加到 Session
 → Agent(..., messages=initial_messages)
 → bind_extensions()
 → CodingAgentRuntime facade
@@ -182,13 +183,13 @@ Chapter 12 的关键结论是：00～11 提供稳定能力，12 负责产品组�
 
 其中 `RuntimeConfig.services` 保存 `cwd`、skills、tools、model，以及可选的 `child_model_factory`，让 Extension 获得产品服务而不反向依赖 assembly。`_check_unique_tools()` 会在绑定前拒绝产品 Tool、extra Tool、Extension Tool 的重名。
 
-Facade 的 `run()` / `stream()` 始终走 `ExtensionHost`，不是裸 `Agent`，这样 message persistence 和 Extension lifecycle 不会被绕过：
+Facade 的 `run()` / `stream()` 始终委托 `ExtensionHost`，Host 再直接调用底层 Agent：
 
 ```python
 async def run(self, prompt: str):
     return await self.host.run(prompt)
 ```
 
-保存时也不再重复遍历 `agent.messages`；`ExtensionHost._handle_event()` 已在每个 `message_end` 调用 `session.append_message()`。`save_session()` 只负责可选 compaction、用重建结果替换 Agent 工作 context，以及写 JSONL。这一细节避免同一消息被持久化两次。
+保存时也不再重复遍历 `agent.messages`；`bind_extensions()` 注册的 awaited Agent subscriber 已在每个 `message_end` 调用 `session.append_message()`。`save_session()` 只负责可选 compaction、用重建结果替换 Agent 工作 context，以及写 JSONL。这一细节避免同一消息被持久化两次。
 
 五个 Coding Tool 则展示了 Core `Tool` 抽象怎样落到真实文件系统：`read_file` / `grep` 可并行，`bash` / `write_file` / `edit` 声明为 sequential；`edit` 先在同一原始 byte snapshot 上验证所有 oldText 唯一且互不重叠，再从后向前应用替换，从而保证一批 edit 不因前一项改变偏移量。

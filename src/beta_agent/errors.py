@@ -16,6 +16,7 @@ ErrorStage = Literal[
     "tool_execute",
     "after_tool_call",
     "extension_bridge",
+    "event_listener",
 ]
 RunStatus = Literal["completed", "error", "aborted"]
 
@@ -26,4 +27,3 @@ class AgentErrorInfo:
     message: str
     exception_type: str
     retryable: bool = False
-

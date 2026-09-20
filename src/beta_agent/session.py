@@ -6,9 +6,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from .messages import AgentMessage, ImageContent, Message, TextContent, ToolCall, utc_now_iso
+from .messages import (
+    AgentMessage,
+    ImageContent,
+    Message,
+    TextContent,
+    ToolCall,
+    ToolDeclaration,
+    ToolReference,
+    utc_now_iso,
+)
+from .transcript import get_current_system_prompt, get_current_tool_declarations
 
-CURRENT_SESSION_FORMAT_VERSION = 2
+CURRENT_SESSION_FORMAT_VERSION = 3
 
 
 @dataclass(slots=True)
@@ -89,12 +99,21 @@ class SessionTree:
             return [_message_from_dict(e.payload) for e in branch if e.type == "message"]
 
         # 重建工作上下文时才应用摘要；Session 中被摘要覆盖的旧 Entry 仍然保留。
-        messages = [
+        # 先从被压缩的 transcript 重建有效 system/tool baseline，避免 summary
+        # 覆盖原始指令或丢失当时已经声明的工具。
+        prefix_entries = [entry for entry in branch[:start] if entry.type == "message"]
+        prefix_messages = [_message_from_dict(e.payload) for e in prefix_entries]
+        system_prompt = get_current_system_prompt(prefix_messages)
+        tool_declarations = get_current_tool_declarations(prefix_messages)
+        messages: list[AgentMessage] = []
+        if system_prompt or tool_declarations:
+            messages.append(AgentMessage.system(system_prompt, tools_added=tool_declarations))
+        messages.append(
             AgentMessage.system(
                 f"Conversation summary:\n{latest.payload['summary']}",
                 compaction_entry_id=latest.id,
             )
-        ]
+        )
         messages.extend(_message_from_dict(e.payload) for e in branch[start:] if e.type == "message")
         return messages
 
@@ -211,6 +230,11 @@ def _message_to_dict(message: AgentMessage) -> dict[str, Any]:
         "is_error": message.is_error,
         "metadata": message.metadata,
         "timestamp": message.timestamp,
+        "tools_added": [
+            {"name": tool.name, "description": tool.description, "parameters": tool.parameters}
+            for tool in message.tools_added
+        ],
+        "tools_removed": [{"name": tool.name} for tool in message.tools_removed],
     }
 
 
@@ -225,4 +249,6 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
         is_error=data.get("is_error", False),
         metadata=data.get("metadata", {}),
         timestamp=data.get("timestamp", utc_now_iso()),
+        tools_added=[ToolDeclaration(**tool) for tool in data.get("tools_added", [])],
+        tools_removed=[ToolReference(**tool) for tool in data.get("tools_removed", [])],
     )

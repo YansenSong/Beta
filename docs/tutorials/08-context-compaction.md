@@ -66,7 +66,8 @@ Compaction `C` 表示前半段已经被 summary 覆盖，同时 `first_kept_entr
 那么 `reconstruct_messages()` 可以得到：
 
 ```text
-Conversation Summary
+system: 原始 system/tool baseline（若有）
+system: Conversation Summary
 U3
 A3
 U4
@@ -74,6 +75,8 @@ A4
 ```
 
 原始 `U1 ~ A2` 仍然存在于 Session Tree，只是不再逐条进入 canonical working context。
+
+Compaction summarizer 不会把 system-state messages 当作旧对话内容送去摘要。重建时 Session 先从被压缩的 transcript replay 当前 system prompt 与 Tool declaration baseline，再加 summary system message 和 retained tail；因此摘要不会取代 Coding Agent 原始指令，也不会丢失有效工具状态。
 
 所以 Compaction 的本质是：
 
@@ -175,9 +178,9 @@ while target_pos > 0:
     target_pos -= 1
 ```
 
-它只把切点之前的 `prefix_messages` 交给 summarizer，并把摘要、`first_kept_entry_id`、`tokens_before` 追加为 compaction Entry。原 message Entry 一条都不删。
+它只把切点之前的非 system `prefix_messages` 交给 summarizer，并把摘要、`first_kept_entry_id`、`tokens_before` 追加为 compaction Entry。原 message Entry 一条都不删。
 
-重建时 `SessionTree.reconstruct_messages()` 只看 active branch 上最后一条 compaction，先注入一条带 `compaction_entry_id` metadata 的 system summary，再从 `first_kept_entry_id` 起恢复原消息。如果该 id 在 branch 中找不到，代码会回退到完整消息，而不是用损坏的摘要默默丢历史。
+重建时 `SessionTree.reconstruct_messages()` 只看 active branch 上最后一条 compaction，先从压缩前缀恢复 system prompt 与 Tool declaration baseline，再注入带 `compaction_entry_id` metadata 的 system summary，最后从 `first_kept_entry_id` 起恢复原消息。如果该 id 在 branch 中找不到，代码会回退到完整消息，而不是用损坏的摘要默默丢历史。
 
 ## 9. 掌握标准
 

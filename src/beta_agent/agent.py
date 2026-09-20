@@ -4,7 +4,7 @@ import asyncio
 import inspect
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Literal
 
 from .cancellation import CancellationToken, accepts_cancellation, call_with_optional_cancellation
@@ -12,11 +12,24 @@ from .errors import AgentErrorInfo, ErrorStage, RunStatus
 from .events import EventStream
 from .model import ModelAdapter
 from .provider_messages import ProviderMessage, default_convert_to_llm
+from .transcript import collapse_transcript, declare_tool_changes, get_current_system_prompt
 from .tools import AfterToolCall, BeforeToolCall, ToolRuntime
-from .types import AgentContext, AgentEvent, AgentMessage, ModelEvent, ToolBatchResult, TurnResult
+from .types import (
+    AgentContext,
+    AgentEvent,
+    AgentMessage,
+    ModelEvent,
+    NextTurnUpdate,
+    QueueMode,
+    ToolBatchResult,
+    TurnResult,
+)
 
 TransformContext = Callable[..., Awaitable[list[AgentMessage]] | list[AgentMessage]]
-PrepareNextTurn = Callable[..., Awaitable[AgentContext | None] | AgentContext | None]
+PrepareNextTurn = Callable[
+    ...,
+    Awaitable[NextTurnUpdate | AgentContext | None] | NextTurnUpdate | AgentContext | None,
+]
 ShouldStopAfterTurn = Callable[..., Awaitable[bool] | bool]
 MessageProvider = Callable[..., Awaitable[list[AgentMessage]] | list[AgentMessage]]
 ConvertToLlm = Callable[
@@ -31,6 +44,9 @@ class AgentConfig:
     # 这样后续增加上下文裁剪、权限判断等能力时，不需要不断改写主循环。
     # 工具批次的默认执行方式：并行执行，或按照模型给出的顺序依次执行。
     tool_execution: Literal["parallel", "sequential"] = "parallel"
+
+    steering_mode: QueueMode = "one-at-a-time"
+    follow_up_mode: QueueMode = "one-at-a-time"
 
     # 可选 Hook，用来在调用模型之前，修改“本轮模型能看到的消息”。
     transform_context: TransformContext | None = None
@@ -71,6 +87,8 @@ class _RunState:
     turn_end_emitted: bool = False
     agent_end_emitted: bool = False
     current_assistant: AgentMessage | None = None
+    failed_subscribers: set[int] = dataclass_field(default_factory=set)
+    finalizing: bool = False
 
 
 @dataclass(slots=True)
@@ -97,10 +115,23 @@ class _MessageQueue:
     def push(self, message: AgentMessage) -> None:
         self._items.append(message)
 
-    def drain(self) -> list[AgentMessage]:
+    def extend(self, messages: Sequence[AgentMessage]) -> None:
+        self._items.extend(messages)
+
+    def drain(self, mode: QueueMode = "all") -> list[AgentMessage]:
+        if not self._items:
+            return []
+        if mode == "one-at-a-time":
+            return [self._items.popleft()]
         items = list(self._items)
         self._items.clear()
         return items
+
+    def clear(self) -> None:
+        self._items.clear()
+
+    def __bool__(self) -> bool:
+        return bool(self._items)
 
 
 class Agent:
@@ -123,10 +154,17 @@ class Agent:
         self._active_run: _ActiveRun | None = None
         self._last_error: AgentErrorInfo | None = None
         self._external_failure: AgentErrorInfo | None = None
+        self._subscribers: list[Callable[..., Any]] = []
 
     @property
     def messages(self) -> list[AgentMessage]:
         return list(self.context.messages)
+
+    @property
+    def system_prompt(self) -> str:
+        """Read-only compatibility view derived from transcript system messages."""
+
+        return get_current_system_prompt(self.context.messages)
 
     @property
     def is_running(self) -> bool:
@@ -145,6 +183,37 @@ class Agent:
 
     def follow_up(self, text: str) -> None:
         self._follow_up.push(AgentMessage.user(text, delivery="follow_up"))
+
+    def clear_steering_queue(self) -> None:
+        self._steering.clear()
+
+    def clear_follow_up_queue(self) -> None:
+        self._follow_up.clear()
+
+    def clear_all_queues(self) -> None:
+        self.clear_steering_queue()
+        self.clear_follow_up_queue()
+
+    def has_queued_messages(self) -> bool:
+        return bool(self._steering or self._follow_up)
+
+    def subscribe(self, listener: Callable[..., Any]) -> Callable[[], None]:
+        """Register an awaited event listener and return an idempotent unsubscribe."""
+
+        self._subscribers.append(listener)
+        subscribed = True
+
+        def unsubscribe() -> None:
+            nonlocal subscribed
+            if not subscribed:
+                return
+            subscribed = False
+            try:
+                self._subscribers.remove(listener)
+            except ValueError:
+                pass
+
+        return unsubscribe
 
     # 启动一次Agent运行，返回一个 EventStream，stream 里会 yield AgentEvent。
     # 这个 stream 里会 yield AgentEvent，直到 run 完成或被取消
@@ -190,7 +259,9 @@ class Agent:
         self._ensure_idle()
         if not self.context.messages:
             raise ValueError("Cannot continue: no messages in context")
-        if self.context.messages[-1].role == "assistant":
+        if self.context.messages[-1].role == "assistant" and not self.has_queued_messages() and not (
+            self.config.get_steering_messages or self.config.get_follow_up_messages
+        ):
             raise ValueError("Cannot continue from an assistant message")
         return self.stream([])
 
@@ -259,8 +330,8 @@ class Agent:
             except Exception as exc:
                 raise _StageFailure(_error_info("steering_provider", exc)) from exc
             cancellation.throw_if_cancelled()
-            return list(messages)
-        return self._steering.drain()
+            self._steering.extend(list(messages))
+        return self._steering.drain(self.config.steering_mode)
 
     async def _drain_follow_up(self, cancellation: CancellationToken) -> list[AgentMessage]:
         cancellation.throw_if_cancelled()
@@ -272,8 +343,8 @@ class Agent:
             except Exception as exc:
                 raise _StageFailure(_error_info("follow_up_provider", exc)) from exc
             cancellation.throw_if_cancelled()
-            return list(messages)
-        return self._follow_up.drain()
+            self._follow_up.extend(list(messages))
+        return self._follow_up.drain(self.config.follow_up_mode)
 
     async def _run(
         self,
@@ -282,19 +353,40 @@ class Agent:
         cancellation: CancellationToken,
     ) -> list[AgentMessage]:
         state = _RunState(new_messages=list(prompts))
+
+        async def publish(event: AgentEvent) -> None:
+            for listener in list(self._subscribers):
+                if id(listener) in state.failed_subscribers:
+                    continue
+                try:
+                    await self._call(listener, event, cancellation=cancellation)
+                except asyncio.CancelledError:
+                    if cancellation.cancelled:
+                        state.failed_subscribers.add(id(listener))
+                        continue
+                    raise
+                except Exception as exc:
+                    state.failed_subscribers.add(id(listener))
+                    if not state.finalizing:
+                        raise _StageFailure(_error_info("event_listener", exc)) from exc
+            await emit(event)
+
         try:
-            return await self._run_impl(prompts, emit, cancellation, state)
+            return await self._run_impl(prompts, publish, cancellation, state)
         except asyncio.CancelledError:
             cancellation.cancel()
             if self._external_failure is not None:
                 info = self._external_failure
                 self._external_failure = None
-                return await self._finalize_error(state, emit, info)
-            return await self._finalize_aborted(state, emit)
+                return await self._finalize_error(state, publish, info)
+            try:
+                return await self._finalize_aborted(state, publish)
+            except _StageFailure as failure:
+                return await self._finalize_error(state, publish, failure.info)
         except _StageFailure as failure:
-            return await self._finalize_error(state, emit, failure.info)
+            return await self._finalize_error(state, publish, failure.info)
         except Exception as exc:
-            return await self._finalize_error(state, emit, _error_info("runtime", exc))
+            return await self._finalize_error(state, publish, _error_info("runtime", exc))
 
     async def _run_impl(self, prompts, emit, cancellation, state) -> list[AgentMessage]:
         state.agent_started = True
@@ -315,6 +407,15 @@ class Agent:
         previous_turn: TurnResult | None = None
         # Steering 即使在 run 启动前已经排队，也应该参与下一次模型调用。
         pending = await self._drain_steering(cancellation)
+        if (
+            not pending
+            and not prompts
+            and self.context.messages
+            and self.context.messages[-1].role == "assistant"
+        ):
+            # continue_stream() may resume a completed assistant turn when a
+            # queued follow-up is the only message waiting to be delivered.
+            pending = await self._drain_follow_up(cancellation)
 
         # 双层循环是一个关键设计：
         # - 内层循环处理“当前任务仍需继续”的 Tool Call / Steering；
@@ -322,13 +423,14 @@ class Agent:
         while True:
             has_more_tool_calls = True
             while has_more_tool_calls or pending:
+                prepared_messages: list[AgentMessage] = []
 
                 # 如果上一轮有结果，且配置了 prepare_next_turn Hook，则在下一轮开始前调用它。
                 if previous_turn is not None:
                     if self.config.prepare_next_turn:
                         cancellation.throw_if_cancelled()
                         try:
-                            next_context = await self._call(
+                            next_update = await self._call(
                                 self.config.prepare_next_turn,
                                 previous_turn,
                                 cancellation=cancellation,
@@ -338,22 +440,31 @@ class Agent:
                         except Exception as exc:
                             raise _StageFailure(_error_info("prepare_next_turn", exc)) from exc
                         cancellation.throw_if_cancelled()
-                        if next_context is not None:
-                            self.context = next_context
+                        if isinstance(next_update, NextTurnUpdate):
+                            if next_update.context is not None:
+                                self.context = next_update.context
+                            if next_update.model is not None:
+                                self.model = next_update.model
+                            prepared_messages = list(next_update.messages)
+                        elif next_update is not None:
+                            # Keep the historical AgentContext return contract.
+                            self.context = next_update
                     if not pending:
                         pending = await self._drain_steering(cancellation)
+                    pending = [*prepared_messages, *pending]
                     state.turn_started = True
                     state.turn_end_emitted = False
                     await emit(AgentEvent(type="turn_start"))
 
                 if pending:
                     cancellation.throw_if_cancelled()
-                    for message in pending:
-                        self.context.messages.append(message)
-                        state.new_messages.append(message)
-                        await emit(AgentEvent(type="message_start", message=message))
-                        await emit(AgentEvent(type="message_end", message=message))
-                    pending = []
+                pending = declare_tool_changes(self.context, pending)
+                for message in pending:
+                    self.context.messages.append(message)
+                    state.new_messages.append(message)
+                    await emit(AgentEvent(type="message_start", message=message))
+                    await emit(AgentEvent(type="message_end", message=message))
+                pending = []
 
                 assistant_result = await self._stream_assistant(emit, cancellation, state)
                 assistant = assistant_result.message
@@ -453,6 +564,12 @@ class Agent:
                 raise _StageFailure(_error_info("transform_context", exc)) from exc
         cancellation.throw_if_cancelled()
 
+        system_prompt, _ = collapse_transcript(self.context.messages)
+        # System state is replayed from the durable transcript and collapsed into
+        # the adapter's leading system_prompt field. It must not also appear in
+        # provider messages, where it would be duplicated as historical state.
+        runtime_messages = [message for message in runtime_messages if message.role != "system"]
+
         try:
             converted_messages = await self._call(
                 self.config.convert_to_llm,
@@ -475,7 +592,7 @@ class Agent:
         state.current_assistant = None
 
         try:
-            model_stream = self._model_stream(provider_messages, cancellation)
+            model_stream = self._model_stream(provider_messages, cancellation, system_prompt=system_prompt)
             if inspect.isawaitable(model_stream):
                 model_stream = await model_stream
             async for event in model_stream:
@@ -559,10 +676,18 @@ class Agent:
             state.current_assistant = final
             return _AssistantResult(final, _error_info("model", exc))
 
-    def _model_stream(self, messages: Sequence[ProviderMessage], cancellation: CancellationToken):
+    def _model_stream(
+        self,
+        messages: Sequence[ProviderMessage],
+        cancellation: CancellationToken,
+        *,
+        system_prompt: str | None = None,
+    ):
         stream = self.model.stream
         kwargs: dict[str, Any] = {
-            "system_prompt": self.context.system_prompt,
+            "system_prompt": (
+                get_current_system_prompt(self.context.messages) if system_prompt is None else system_prompt
+            ),
             "messages": messages,
             "tools": self.context.tools,
         }
@@ -623,7 +748,6 @@ class Agent:
         error_info: AgentErrorInfo | None = None,
     ) -> list[AgentMessage]:
         if not state.agent_end_emitted:
-            state.agent_end_emitted = True
             await emit(
                 AgentEvent(
                     type="agent_end",
@@ -633,6 +757,7 @@ class Agent:
                     error=error_info.message if error_info else None,
                 )
             )
+            state.agent_end_emitted = True
         return list(state.new_messages)
 
     async def _finalize_aborted(self, state: _RunState, emit) -> list[AgentMessage]:
@@ -648,6 +773,7 @@ class Agent:
         return await self._emit_agent_end(state, emit, status="aborted")
 
     async def _finalize_error(self, state: _RunState, emit, info: AgentErrorInfo) -> list[AgentMessage]:
+        state.finalizing = True
         self._last_error = info
         if not state.agent_started:
             state.agent_started = True

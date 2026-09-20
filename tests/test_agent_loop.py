@@ -34,7 +34,7 @@ async def test_tool_driven_loop_and_events():
     result = await stream.result()
 
     assert result[-1].content == "42"
-    assert [m.role for m in agent.messages] == ["user", "assistant", "tool", "assistant"]
+    assert [m.role for m in agent.messages] == ["system", "user", "assistant", "tool", "assistant"]
     assert "tool_execution_start" in event_types
     assert "tool_execution_end" in event_types
     assert event_types[0] == "agent_start"

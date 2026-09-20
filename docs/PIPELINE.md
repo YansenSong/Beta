@@ -14,14 +14,16 @@ while True：
 	has_more_toolcalls = True
 	while has_more_toolcalls or pending: 进入循环
 		if previous_turn(TurnResult) is not None：（非首轮）
-			Hook：prepare_next_turn 可根据上轮TurnResult调整本轮AgentContext
+			仅当确认下一次 assistant request 会发生时，调用 prepare_next_turn
+			Hook 可返回旧 AgentContext 或 NextTurnUpdate(context/messages/model)
 			启动新的turn
 		if pending:
 			将pending中的消息增加到context.messages中
 			清空pending
+		在下次模型请求前，replay transcript 并将运行时 Tool 变化写成 system-message delta
 		Hook：transform_context 调用模型之前，修改“本轮模型能看到的消息”
 		将context.messages转换为模型适配层使用的 ProviderMessage
-		使用 ProviderMessage、system_prompt、tools 请求模型API
+		从 transcript collapse 得到 system_prompt；使用 ProviderMessage 与当前 executable tools 请求模型API
 		模型开始流式回复：
 			收到start：
 				向 context.messages 添加 assistant 占位消息
@@ -53,6 +55,8 @@ while True：
 		continue
 	break
 ```
+
+两条队列默认按 `one-at-a-time` 每个合法检查点消费一条；配置为 `all` 时才一次取出队列中全部消息。Agent 每次 emit lifecycle event 前会先 await `Agent.subscribe()` listeners，再把事件写入调用方消费的 EventStream。
 
 
 ```
@@ -184,6 +188,8 @@ return await self._run(prompts, emit, token)
 
 `emit(event)` 会把 `AgentEvent` 放入内部异步队列。CLI 的 `async for event in stream` 正是在消费这条队列。
 
+在调用 `emit` 前，Agent 会按注册顺序等待订阅者；Extension message dispatch 和 Session persistence 因此先于对应事件对外可见。`agent_end` 的 subscribers 全部完成后 run 才 settle，不再依靠 `sleep(0)` 让 ExtensionHost 抢到执行时机。
+
 ## 5. `Agent._run()` 统一处理退出路径
 
 文件：`src/beta_agent/agent.py`
@@ -259,9 +265,13 @@ if previous_turn is not None:
 
 这表示当前不是第一次模型调用，而是在准备下一个 turn。里面主要完成：
 
-1. 调用 `prepare_next_turn`，允许根据上一轮结果调整上下文；
-2. 当前没有待处理消息时，读取新的 Steering；
-3. 重置 turn 状态并发出新的 `turn_start`。
+1. 调用 `prepare_next_turn`，允许返回旧式 `AgentContext` 或 `NextTurnUpdate`；
+2. `NextTurnUpdate` 可替换 context、追加正式 transcript messages、切换后续 model；
+3. 当前没有待处理消息时，读取新的 Steering；
+4. 对 pending message 声明 tool-state delta，随后发出正常 message lifecycle；
+5. 重置 turn 状态并发出新的 `turn_start`。
+
+如果当前 turn 后没有下一次模型请求（例如 run 将结束、Stop Hook 已要求结束），`prepare_next_turn` 不会运行。
 
 ### 6.4 请求模型
 
@@ -298,6 +308,8 @@ runtime_messages = await self._call(
 ```
 
 这个可选 Hook 用于修改“本轮模型能看到的消息”，例如裁剪历史或注入摘要。默认不会覆盖 `self.context.messages` 保存的完整历史。
+
+System instruction 与模型可见 Tool 声明则从 canonical transcript 顺序 replay。Provider 兼容投影把所有 system text 合并到单一 `system_prompt`，从普通 Provider message list 移除 system-state messages，并用当前 `context.tools` 作为顶层 tools；这避免把历史 delta 重复发送给 OpenAI-compatible API。
 
 ### 7.2 转换为 Provider 消息
 
@@ -351,7 +363,8 @@ start → update → error
 ```python
 stream = self.model.stream
 kwargs = {
-    "system_prompt": self.context.system_prompt,
+    # 由 transcript replay/collapse 得到的只读兼容投影
+    "system_prompt": system_prompt,
     "messages": messages,
     "tools": self.context.tools,
 }
@@ -402,7 +415,7 @@ async with client.stream(
 
 1. `_stream_assistant()` 更新 `self.context.messages` 中最后一条 assistant 消息；
 2. `_stream_assistant()` 发出 `AgentEvent(type="message_update")`；
-3. `EventStream.emit()` 将事件放入异步队列；
+3. Agent 先 await 已注册的 subscribers，再把事件放入 EventStream 异步队列；
 4. CLI 的 `async for event in stream` 取出事件；
 5. CLI 计算新增文本并打印到终端。
 

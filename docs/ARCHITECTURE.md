@@ -13,7 +13,7 @@ Application / Harness
         ↓
 Agent Core（beta_agent）
 ├── Agent Loop
-├── EventStream
+├── EventStream + awaited event subscribers
 └── ToolRuntime
         ↓
 Provider Boundary
@@ -37,7 +37,9 @@ User / queued Message
         ↓
 transform_context
         ↓
-ModelAdapter.stream()
+transcript replay + provider projection
+        ↓
+ModelAdapter.stream(system_prompt, messages, tools)
         ↓
 Assistant Message
         ↓
@@ -86,10 +88,12 @@ ExtensionRunner registrations
 ExtensionHost / bridge
       ├── context      → AgentConfig.transform_context
       ├── tool_call    → AgentConfig.before_tool_call
-      ├── message_end  ← Agent EventStream
-      ├── turn_end     ← Agent EventStream
+      ├── message_end  ← awaited Agent subscriber
+      ├── turn_end     ← awaited Agent subscriber
       └── active tools → running Agent.context.tools
 ```
+
+`ExtensionHost` 是 facade，不再消费并重新发射一条内层 EventStream。Agent 在把事件交给外部 EventStream 前，按注册顺序 await subscribers；Coding Agent 的消息持久化因此属于 run settlement。
 
 Extension Tool 也不会进入第二套执行器：
 
@@ -123,6 +127,10 @@ ToolBatchResult
 
 Agent Core 尽量只理解这些内部对象，而不是 Provider-specific JSON。
 
+### `transcript.py`
+
+提供 system prompt / tool declaration 的纯 replay、diff 与 provider projection。Transcript 是模型状态历史的 source of truth；运行时的 `AgentContext.tools` 则保留可执行的 Python Tool objects。
+
 ### `model.py` / `adapters/`
 
 `ModelAdapter` 负责 Provider 协议转换和模型流式调用。
@@ -149,6 +157,8 @@ Provider 差异不应进入 Agent Loop。
 - Tool batch 的触发；
 - 生命周期事件。
 
+`AgentContext.messages` 是 canonical transcript：system instruction 增量和模型可见 Tool declaration 通过 system message 顺序重放。每次模型请求前，Agent 会比较 transcript declaration 与当前 executable tools，并将差异作为新 message 持久化。
+
 它刻意不知道：
 
 ```text
@@ -172,6 +182,8 @@ lookup
 → after_tool_call
 → commit Tool Result
 ```
+
+Tool progress 只在执行生命周期内可发出；Tool settle 后到达的 update 会被忽略。Tool Result 支持 text/image content blocks 和可选 usage，并随 Tool Message 一起提交。
 
 ### `session.py`
 
@@ -236,6 +248,8 @@ Runtime history
 
 `Agent.context.messages` 表示已经发生的完整 Runtime history。
 
+这份 history 同时记录系统指令与模型可见工具的状态变化。对仍使用 `system_prompt + messages + tools` 签名的 OpenAI-compatible adapter，Runtime 在边界处把 system message replay 成单个 system prompt、从普通 message list 移除 system-state messages，并把当前可执行工具作为顶层 tools 传入。
+
 `transform_context()` 只决定某一次 ModelAdapter 调用看到什么。
 
 因此 Context seam 可以承载：
@@ -247,6 +261,8 @@ Runtime history
 - Provider-specific input policy。
 
 而 `prepare_next_turn()` 更强，它可以真正替换下一轮 Runtime 使用的 `AgentContext`。
+
+它也可以返回 `NextTurnUpdate`，一次提交新的 context、要进入 transcript 的 messages 和后续 model。只有确定还有下一次 assistant request 时才会执行此 Hook；prepared messages 会经过正常 message lifecycle 和持久化流程。
 
 ---
 
@@ -329,6 +345,8 @@ turn_end
 
 所以两种消息不能简单合并成同一个 pending queue。
 
+两条队列各自支持 `one-at-a-time` 与 `all`，默认都是 `one-at-a-time`。前者每个合法检查点只交付最早的一条，后者保留一次 drain 全部的行为；continue 可从 assistant 结尾恢复的前提是有排队消息或外部消息 provider。
+
 ---
 
 ## 7. Session 与 Compaction
@@ -350,10 +368,12 @@ Compaction 同样 append-only：
 追加 CompactionEntry
       ↓
 reconstruct_messages()
-使用 summary + retained tail
+恢复 system/tool baseline + summary + retained tail
 ```
 
 因此 Context Window 的限制不会迫使持久化层删除真实历史。
+
+Session format v3 会保存 system/tool deltas、rich Tool Result content 和新增 metadata。Coding Agent 对缺少 transcript baseline 的旧 v1/v2 session，在当前 leaf 追加当前 prompt/tool snapshot，不重写旧 entry。Compaction 重建时会先恢复被压缩前有效的 system/tool baseline，再追加 summary 和 retained tail。
 
 ---
 
@@ -570,6 +590,8 @@ coding_agent 只依赖 beta_agent，Core 不反向依赖产品包
 
 测试是这些 invariant 的最终约束。
 
+Extension 的普通观察 handler 仍由 `ExtensionRunner` 按注册顺序逐个隔离错误；承载持久化和 Extension dispatch 的 Agent subscriber 则被 await。结构性 subscriber/persistence failure 会进入 Agent 的 `event_listener` error lifecycle，而不是依赖调度让步或外层事件转发。
+
 ---
 
 ## 14. Chapter 12：Coding Agent 产品层
@@ -592,5 +614,7 @@ Extensions
 真正组合成 Coding Agent。
 
 产品层通过 `CodingAgentRuntime` facade 统一走 `ExtensionHost`，所以 message persistence 和 Extension observe 不会因调用方直接拿到 `Agent` 而丢失。`save_session()` 不会再次 append `agent.messages`。
+
+新建或从旧 session 迁移时，Coding Agent 会在首个模型请求前把 prompt/tool baseline 写入 Session；之后 ExtensionHost 通过 Agent subscriber 在 `message_end` 时持久化消息。
 
 Coding Tool 仍是普通 `Tool`：`read_file` / `grep` 可并行，`write_file` / `edit` / `bash` 串行。`cwd` 只负责路径解析，不提供 sandbox；示例 Permission Gate 只是 `before_tool_call` 策略，不是完整安全系统。

@@ -95,9 +95,6 @@ class EventStream(Generic[T]):
         self._started = True
         async def emit(event: AgentEvent) -> None:
             await self._queue.put(event)
-            # 给 wrapper layer（例如 ExtensionHost）机会观察每个 event，
-            # 并在 producer 于同一个 event-loop turn 内继续推进 lifecycle 前取消它。
-            await asyncio.sleep(0)
 
         try:
             return await runner(emit)

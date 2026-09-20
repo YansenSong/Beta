@@ -134,7 +134,17 @@ transform_context = 临时视图
 prepare_next_turn = 下一轮状态
 ```
 
-Beta 在 `Agent._run()` 的 turn 边界调用 `prepare_next_turn`。
+Beta 在已经确定还会继续发起下一次 assistant request 后，才在 turn 边界调用 `prepare_next_turn`。旧 Hook 仍可返回新的 `AgentContext`；也可返回 `NextTurnUpdate`：
+
+```python
+NextTurnUpdate(
+    context=replacement_context,  # 可选
+    messages=[AgentMessage.system("下一阶段说明")],  # 可选，正式 transcript message
+    model=next_model,  # 可选，影响本轮之后的请求
+)
+```
+
+prepared messages 会经过 tool-state reconciliation、`message_start` / `message_end` 和 Session persistence，不是仅作用于当前请求的临时 prompt。最终 turn、被 Stop Hook 结束的 run、或其他没有下一次请求的路径都不会运行 prepare hook。
 
 ## 6. 为什么这一层非常重要
 
@@ -166,7 +176,7 @@ provider_messages = list(converted_messages)
 - `runtime_messages` 是本轮经过裁剪、补充或过滤的 `AgentMessage` view；
 - `provider_messages` 是去掉 Runtime-only 字段后的 Provider DTO。
 
-Hook 收到的是 `list(self.context.messages)` 的浅拷贝，因此简单的增删列表项不会直接改写 canonical list。相反，`prepare_next_turn(previous_turn)` 可以返回新的 `AgentContext`，主循环会执行 `self.context = next_context`；这正是“临时视图”和“改变后续状态”的源码差异。
+Hook 收到的是 `list(self.context.messages)` 的浅拷贝，因此简单的增删列表项不会直接改写 canonical list。相反，`prepare_next_turn(previous_turn)` 可以返回新的 `AgentContext`，或通过 `NextTurnUpdate` 替换 context、追加 transcript messages、切换 model；这正是“临时视图”和“改变后续状态”的源码差异。
 
 ## 7. 掌握标准
 

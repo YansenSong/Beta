@@ -47,6 +47,7 @@ Beta/
 │   │   ├── tools.py
 │   │   ├── session.py
 │   │   ├── compaction.py
+│   │   ├── transcript.py
 │   │   ├── skills.py
 │   │   ├── adapters/
 │   │   └── extensions/
@@ -126,6 +127,8 @@ Tool Calls?
         agent_end
 ```
 
+每次请求前，Runtime 从 transcript 重放系统指令和模型可见 Tool 声明，并在 Provider 边界投影成 Adapter 所需的 `system_prompt`、普通消息和当前顶层 tools。
+
 Agent Core 不认识 permission gate、plan mode、subagent、workspace workflow 或 Extension 目录；这些都在更外层组合。
 
 ---
@@ -135,16 +138,16 @@ Agent Core 不认识 permission gate、plan mode、subagent、workspace workflow
 Agent 只依赖 Provider-neutral 的 `ModelAdapter`：
 
 ```text
-system_prompt
-messages
-tools
+transcript replay + current executable tools
+        ↓
+system_prompt + provider messages + top-level tools
    ↓
 ModelAdapter.stream()
    ↓
 ModelEvent
 ```
 
-Provider JSON、流式协议、finish reason、Tool schema 转换都留在 Adapter。当前真实实现是 `OpenAICompatibleAdapter`，测试使用确定性的 `ScriptedModelAdapter`。
+`AgentContext.messages` 同时承载 system instruction 与模型可见 Tool declaration 的历史；`transcript.py` replay 后在兼容边界 collapse 成当前 Adapter 接口需要的参数。Provider JSON、流式协议、finish reason、Tool schema 转换都留在 Adapter。当前真实实现是 `OpenAICompatibleAdapter`，测试使用确定性的 `ScriptedModelAdapter`。
 
 ---
 
@@ -174,6 +177,8 @@ messages = await stream.result()
 
 `message_update` 携带当前完整 partial message，而不是要求 UI 自己累计字符 delta。
 
+此外，`Agent.subscribe(listener)` 提供按注册顺序 await 的事件订阅。Agent 先等待 subscribers，再把事件交给调用方的 EventStream；因此 `agent_end` listener 完成前 run 仍未 settle，Session persistence 不需要依赖 `asyncio.sleep(0)` 让外层消费者抢到调度。
+
 ---
 
 ## 5. Context 的两个层次
@@ -189,6 +194,8 @@ Runtime history
 `transform_context()` 只修改本轮模型视图，适合 sliding window、RAG、过滤、Plan Mode 提示等。
 
 `prepare_next_turn()` 更强，可以真正替换下一轮 Runtime 使用的 `AgentContext`。
+
+它也可以返回 `NextTurnUpdate(context=..., messages=..., model=...)`。prepared messages 会成为正式 transcript 并经过 message event / persistence；model 变更只作用于下一轮及之后。Hook 只会在确定要发起下一次 assistant request 时运行。
 
 ---
 
@@ -218,6 +225,8 @@ lookup
 ```
 
 Tool 失败通常被归一化成模型可见 error Tool Result，让模型有机会自我修正，而不是直接终止整个 Agent run。
+
+`ToolResult.content` 可包含文本、图片或混合 content blocks，并可携带 usage metadata。`ToolExecutionContext.progress()` 在 execute settle 后关闭更新入口，避免 late progress 出现在 `tool_execution_end` 之后。
 
 ### Parallel Tool 的两个顺序
 
@@ -262,6 +271,8 @@ Follow-up?
 └── no  → agent_end
 ```
 
+Steering 与 Follow-up 各自支持 `one-at-a-time` / `all`，默认 `one-at-a-time`；队列模式不会改变两者不同的消费检查点。
+
 ---
 
 ## 8. Session Tree 与 Compaction
@@ -283,10 +294,12 @@ Compaction 也保持 append-only：
 追加 CompactionEntry
       ↓
 reconstruct_messages()
-使用 summary + retained tail
+恢复 system/tool baseline + summary + retained tail
 ```
 
 Context Window 的限制不会迫使持久化层删除真实历史。
+
+Session format v3 持久化 system instruction/tool declaration delta、rich Tool Result content 与新增 metadata。Coding Agent 会为新 session 写入初始 baseline；legacy v1/v2 session 在恢复 leaf 追加当前 snapshot，而不改写旧 entry。Compaction reconstruction 先保留有效 baseline 和工具状态，再接 summary 与 retained tail。
 
 ---
 
@@ -318,8 +331,8 @@ ExtensionRunner registrations
 ExtensionHost / bridge
       ├── context      → AgentConfig.transform_context
       ├── tool_call    → AgentConfig.before_tool_call
-      ├── message_end  ← Agent EventStream
-      ├── turn_end     ← Agent EventStream
+      ├── message_end  ← awaited Agent subscriber
+      ├── turn_end     ← awaited Agent subscriber
       └── active tools → Agent.context.tools
 ```
 
@@ -346,6 +359,8 @@ tool_call → intercept，第一个 block 立即短路
 
 context → 顺序 pipeline，后一个 handler 看前一个输出
 ```
+
+`ExtensionHost` 直接委托 Agent 的 stream / continue / abort / wait API。Agent subscriber 在事件交给 EventStream 前负责消息持久化和 Extension dispatch；Extension 普通 handler 错误由 Runner 隔离，持久化等 infrastructure failure 则进入 Agent 的 `event_listener` error lifecycle。
 
 ### Extension Tool
 
@@ -461,7 +476,7 @@ bash        sequential  workspace 下执行 shell、超时/取消/输出截断
 
 ### Session persistence
 
-`ExtensionHost` 已在 `message_end` 时向 Session 追加消息，因此 `CodingAgentRuntime.save_session()` 不能再次遍历 `agent.messages` 重复 append。
+Agent subscriber 已在 `message_end` 时向 Session 追加消息，因此 `CodingAgentRuntime.save_session()` 不能再次遍历 `agent.messages` 重复 append。新建及 legacy 迁移 baseline 在首次模型请求前进入 Session。
 
 ### cwd 不是 sandbox
 
