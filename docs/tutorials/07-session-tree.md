@@ -38,7 +38,7 @@ U2 → A2 → U3 → A3
 
 ## 2. Beta 的 `SessionEntry`
 
-Beta 在 [`../../src/beta_agent/session.py`](../../src/beta_agent/session.py) 中用 append-only Entry 表示历史。
+Beta 在 [`../../src/beta_agent/harness/session.py`](../../src/beta_agent/harness/session.py) 中用 append-only Entry 表示历史。
 
 每条 Entry 具有：
 

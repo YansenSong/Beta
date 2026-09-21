@@ -3,8 +3,10 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable
 
-from ..session import SessionEntry, SessionTree
+from .session import SessionEntry, SessionTree
 from ..types import AgentMessage, Message
+
+__all__ = ["Summarizer", "compact_session", "session_message"]
 
 Summarizer = Callable[[list[AgentMessage]], Awaitable[str] | str]
 
@@ -67,6 +69,6 @@ async def compact_session(
 
 
 def session_message(entry: SessionEntry) -> AgentMessage:
-    from ..session import _message_from_dict
+    from .session import _message_from_dict
 
     return _message_from_dict(entry.payload)

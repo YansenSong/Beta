@@ -6,7 +6,7 @@ from typing import Any, Callable
 from ..agent import Agent
 from ..runtime.cancellation import CancellationToken, call_with_optional_cancellation
 from ..runtime.events import EventStream
-from ..tools import BeforeToolCallDecision, Tool
+from ..harness.tool import BeforeToolCallDecision, Tool
 from ..types import AgentEvent, AgentMessage
 from .runner import ExtensionRunner
 from .types import MessageEndEvent, ToolCallEvent, TurnEndEvent

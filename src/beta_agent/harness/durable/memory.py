@@ -161,4 +161,3 @@ class MemoryStorage:
             validate_json(record.message)
             if record.status != "pending": raise ValueError("New outbox must be pending")
 
-

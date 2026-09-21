@@ -20,6 +20,14 @@ from ..messages import (
 )
 from ..runtime.transcript import get_current_system_prompt, get_current_tool_declarations
 
+__all__ = [
+    "CURRENT_SESSION_FORMAT_VERSION",
+    "SessionEntry",
+    "SessionTree",
+    "agent_message_from_dict",
+    "agent_message_to_dict",
+]
+
 CURRENT_SESSION_FORMAT_VERSION = 3
 
 

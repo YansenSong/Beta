@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from beta_agent.tools import Tool, ToolExecutionContext
+from beta_agent.harness.tool import Tool, ToolExecutionContext
 from beta_agent.types import ToolResult
 from .path_utils import resolve_tool_path
 

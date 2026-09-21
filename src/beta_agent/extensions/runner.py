@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..runtime.cancellation import CancellationToken, call_with_optional_cancellation
-from ..tools import Tool
+from ..harness.tool import Tool
 from ..types import AgentMessage
 from .types import (
     ContextEvent,

@@ -34,7 +34,7 @@ code review
 
 ## 2. Skill Catalog 只放 metadata
 
-Beta 的 [`../../src/beta_agent/skills.py`](../../src/beta_agent/skills.py) 会扫描 `SKILL.md`，读取 frontmatter 中的：
+Beta 的 [`../../src/beta_agent/harness/skill.py`](../../src/beta_agent/harness/skill.py) 会扫描 `SKILL.md`，读取 frontmatter 中的：
 
 ```text
 name
@@ -168,7 +168,7 @@ Skill 之所以重要，不只是因为它能放 Markdown，而是因为它证�
 
 ### Catalog 实际读取了什么
 
-[`SkillCatalog.discover()`](../../src/beta_agent/skills.py) 使用 `root.glob("**/SKILL.md")` 找文件，但启动阶段虽然调用了 `read_text()`，只把内容交给 `_parse_frontmatter()`；最终对象只保留：
+[`SkillCatalog.discover()`](../../src/beta_agent/harness/skill.py) 使用 `root.glob("**/SKILL.md")` 找文件，但启动阶段虽然调用了 `read_text()`，只把内容交给 `_parse_frontmatter()`；最终对象只保留：
 
 ```python
 @dataclass(frozen=True, slots=True)

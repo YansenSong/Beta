@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Generic, Literal, TypeVar
 from pydantic import BaseModel
 
-from ..session import SessionTree
-from ..tools import ToolExecutionContext
+from ..harness.session import SessionTree
+from ..harness.tool import ToolExecutionContext
 from ..types import AgentContext, AgentMessage, ToolCall, ToolResult
 
 ArgsT = TypeVar("ArgsT", bound=BaseModel)

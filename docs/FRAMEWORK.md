@@ -42,15 +42,16 @@ Beta/
 │   ├── beta_agent/
 │   │   ├── agent.py
 │   │   ├── types.py
-│   │   ├── events.py
-│   │   ├── model.py
-│   │   ├── tools.py
-│   │   ├── session.py
-│   │   ├── compaction.py
-│   │   ├── transcript.py
-│   │   ├── skills.py
 │   │   ├── adapters/
-│   │   └── extensions/
+│   │   ├── extensions/
+│   │   ├── runtime/
+│   │   └── harness/
+│   │       ├── compation.py
+│   │       ├── durable/
+│   │       │   └── runtime/
+│   │       ├── session.py
+│   │       ├── skill.py
+│   │       └── tool.py
 │   └── coding_agent/
 │       ├── assembly.py
 │       ├── prompt.py
@@ -518,13 +519,13 @@ Coding Agent CLI 默认加载 Plan Mode 与 Subagent，并为 child agent 提供
 | 01 | Tool-driven Loop | `src/beta_agent/agent.py`、`tools.py` |
 | 02 | Agent Runtime / Events | `src/beta_agent/events.py`、`agent.py` |
 | 02A | Cancellation / Abort | `src/beta_agent/cancellation.py`、`events.py`、`agent.py`、`model.py`、`tools.py` |
-| 03 | Tool Runtime | `src/beta_agent/tools.py` |
-| 04 | Parallel Tools | `src/beta_agent/tools.py` |
+| 03 | Tool Runtime | `src/beta_agent/harness/tool.py` |
+| 04 | Parallel Tools | `src/beta_agent/harness/tool.py` |
 | 05 | Steering / Follow-up | `src/beta_agent/agent.py` |
 | 06 | Context Transform | `src/beta_agent/agent.py` |
-| 07 | Session Tree | `src/beta_agent/session.py` |
-| 08 | Context Compaction | `src/beta_agent/compaction.py`、`session.py` |
-| 09 | Skills | `src/beta_agent/skills.py` + 产品层读取 Tool |
+| 07 | Session Tree | `src/beta_agent/harness/session.py` |
+| 08 | Context Compaction | `src/beta_agent/harness/compation.py` |
+| 09 | Skills | `src/beta_agent/harness/skill.py` + 产品层读取 Tool |
 | 10 | Extension Runtime | `src/beta_agent/extensions/` |
 | 11 | Extension Composition | `src/coding_agent/extensions/`、extension tests |
 | 12 | Coding Agent Assembly | `src/coding_agent/`、`examples/coding_agent_cli.py`、coding tests |
@@ -621,11 +622,11 @@ coding_agent -> beta_agent 单向依赖
 1. beta_agent/types.py
 2. beta_agent/model.py
 3. beta_agent/events.py
-4. beta_agent/tools.py
+4. beta_agent/harness/tool.py
 5. beta_agent/agent.py
-6. beta_agent/session.py
-7. beta_agent/compaction.py
-8. beta_agent/skills.py
+6. beta_agent/harness/session.py
+7. beta_agent/harness/compation.py
+8. beta_agent/harness/skill.py
 9. beta_agent/extensions/types.py
 10. beta_agent/extensions/runner.py
 11. beta_agent/extensions/wrapper.py

@@ -37,7 +37,7 @@ execute B ──
 execute C ─────
 ```
 
-Beta 对应 [`../../src/beta_agent/tools.py`](../../src/beta_agent/tools.py) 中 `ToolRuntime.execute_batch()` 的 parallel path。
+Beta 对应 [`../../src/beta_agent/harness/tool.py`](../../src/beta_agent/harness/tool.py) 中 `ToolRuntime.execute_batch()` 的 parallel path。
 
 ## 2. prepare 失败也必须保留位置
 

@@ -19,7 +19,7 @@ from beta_agent import (
     ToolResult,
     ToolRuntime,
 )
-from beta_agent.tools import AfterToolCallPatch
+from beta_agent.harness.tool import AfterToolCallPatch
 
 
 class EmptyArgs(BaseModel):

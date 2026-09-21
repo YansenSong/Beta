@@ -28,7 +28,7 @@ normalize Tool Result
 
 如果这些逻辑全部堆进 Agent Loop，那么每增加一种校验、权限或结果处理策略，主循环都会继续膨胀。
 
-所以 Beta 用 [`../../src/beta_agent/tools.py`](../../src/beta_agent/tools.py) 把它们集中在 `ToolRuntime`。
+所以 Beta 用 [`../../src/beta_agent/harness/tool.py`](../../src/beta_agent/harness/tool.py) 把它们集中在 `ToolRuntime`。
 
 ## 2. lookup：模型只给名字，Runtime 找实现
 
@@ -129,7 +129,7 @@ Beta 只有在这一批 finalized result 都要求 terminate 时，才把整个 
 
 ### 顺着一个 Tool Call 走完源码
 
-一个 [`Tool`](../../src/beta_agent/tools.py) 用 `args_model` 声明输入，用 handler 声明行为：
+一个 [`Tool`](../../src/beta_agent/harness/tool.py) 用 `args_model` 声明输入，用 handler 声明行为：
 
 ```python
 @dataclass(slots=True)

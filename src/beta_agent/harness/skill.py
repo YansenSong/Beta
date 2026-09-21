@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+__all__ = ["Skill", "SkillCatalog"]
+
 
 @dataclass(frozen=True, slots=True)
 class Skill:

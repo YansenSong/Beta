@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 
 from beta_agent import AgentMessage, SessionTree, ToolCall
-from beta_agent.durable import (
+from beta_agent.harness.durable import (
     MemoryStorage,
     SQLiteStorage,
     OutboxRecord,

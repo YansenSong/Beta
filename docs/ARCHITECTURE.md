@@ -7,7 +7,7 @@ Beta 的目标不是把所有 Agent 功能都塞进一个 Runtime，而是把稳
 ```text
 Application / Harness
 ├── coding_agent（Coding Agent 产品包）
-├── beta_agent.harness.runtime（durable drive / recovery / checkpoint）
+├── beta_agent.harness.durable.runtime（durable drive / recovery / checkpoint）
 ├── CLI / UI
 ├── Session / Compaction / Skills
 └── ExtensionHost / ExtensionRunner
@@ -23,9 +23,9 @@ Provider Boundary
 External Model API
 
 Durable Storage（被 Harness 使用）
-├── durable/types.py
-├── durable/memory.py
-└── durable/sqlite.py
+├── harness/durable/types.py
+├── harness/durable/memory.py
+└── harness/durable/sqlite.py
 ```
 
 包级依赖保持单向：`coding_agent -> beta_agent`。Core 不反向依赖 Coding Agent 产品层。

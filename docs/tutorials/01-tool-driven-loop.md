@@ -82,7 +82,7 @@ Tool Result
 - 调整计划；
 - 或把真实失败原因告诉用户。
 
-Beta 的 [`../../src/beta_agent/tools.py`](../../src/beta_agent/tools.py) 正是沿这个方向设计。
+Beta 的 [`../../src/beta_agent/harness/tool.py`](../../src/beta_agent/harness/tool.py) 正是沿这个方向设计。
 
 ## 4. Agent Loop 不应该变成 Workflow Engine
 

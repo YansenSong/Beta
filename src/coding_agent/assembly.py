@@ -8,8 +8,8 @@ from typing import Any
 
 from beta_agent.agent import Agent
 from beta_agent.runtime.events import EventStream
-from beta_agent.durable import SQLiteStorage, TaskOutcome
-from beta_agent.harness.runtime import (
+from beta_agent.harness.durable import SQLiteStorage, TaskOutcome
+from beta_agent.harness.durable.runtime import (
     DurableAgentHarness,
     DurableExecutionSnapshot,
     OperationAdmission,
@@ -18,12 +18,12 @@ from beta_agent.harness.runtime import (
 )
 from beta_agent.messages import utc_now_iso
 import uuid
-from beta_agent.compaction import Summarizer, compact_session
+from beta_agent.harness.compation import Summarizer, compact_session
 from beta_agent.extensions import ExtensionFactory, ExtensionHost, ExtensionRunner, RuntimeConfig, bind_extensions
 from beta_agent.providers.model import ModelAdapter
-from beta_agent.session import SessionTree
-from beta_agent.skills import Skill, SkillCatalog
-from beta_agent.tools import Tool
+from beta_agent.harness.session import SessionTree
+from beta_agent.harness.skill import Skill, SkillCatalog
+from beta_agent.harness.tool import Tool
 from beta_agent.runtime.transcript import create_initial_system_message
 from .prompt import build_coding_system_prompt
 from .tools import create_coding_tools

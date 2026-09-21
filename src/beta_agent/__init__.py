@@ -1,6 +1,6 @@
 from .agent import Agent, AgentConfig
 from .runtime.cancellation import CancellationToken
-from .compaction import compact_session
+from .harness.compation import compact_session
 from .runtime.errors import AgentErrorInfo, ErrorStage, RunStatus
 from .runtime.events import EventStream
 from .providers.model import ModelAdapter, ScriptedModelAdapter
@@ -20,16 +20,16 @@ from .providers.messages import (
     ProviderTextContent,
     default_convert_to_llm,
 )
-from .session import SessionEntry, SessionTree, agent_message_from_dict, agent_message_to_dict
+from .harness.session import SessionEntry, SessionTree, agent_message_from_dict, agent_message_to_dict
 from .providers.policy import (
     ProviderRequestOptions,
     ProviderRequestOptionsPatch,
     RetryPolicy,
     merge_provider_request_options,
 )
-from .durable import DurableStorage, MemoryStorage, SQLiteStorage
-from .skills import Skill, SkillCatalog
-from .tools import (
+from .harness.durable import DurableStorage, MemoryStorage, SQLiteStorage
+from .harness.skill import Skill, SkillCatalog
+from .harness.tool import (
     AfterToolCallPatch,
     BeforeToolCallDecision,
     Tool,

@@ -1,4 +1,4 @@
-from .runtime import (
+from .durable.runtime import (
     DurableAgentHarness,
     DurableExecutionSnapshot,
     OperationAdmission,

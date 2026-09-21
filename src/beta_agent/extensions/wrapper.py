@@ -1,7 +1,7 @@
 from __future__ import annotations
 import inspect
 from typing import Any
-from ..tools import Tool
+from ..harness.tool import Tool
 from ..types import ToolResult
 from .types import ExtensionTool
 

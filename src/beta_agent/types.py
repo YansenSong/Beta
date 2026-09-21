@@ -6,7 +6,7 @@ from typing import Any, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .providers.model import ModelAdapter
-    from .tools import Tool
+    from .harness.tool import Tool
     from .providers.policy import ProviderRequestOptionsPatch
 
 from .messages import (

@@ -2,13 +2,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, replace
 from typing import Any
-from ...messages import AgentMessage, utc_now_iso
+from ....messages import AgentMessage, utc_now_iso
 from ...session import agent_message_to_dict
-from ...types import ToolResult
+from ....types import ToolResult
 from .failpoints import Failpoint, NoopFailpoint
-from ...durable.types import OutboxRecord, ToolOperationRecord
-from ...durable.types import arguments_hash
-from ...durable import DurableStorage
+from ..types import DurableStorage, OutboxRecord, ToolOperationRecord
+from ..types import arguments_hash
 
 @dataclass(frozen=True, slots=True)
 class OperationHandle:

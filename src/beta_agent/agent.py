@@ -14,7 +14,7 @@ from .runtime.cancellation import CancellationToken, call_with_optional_cancella
 from .runtime.errors import AgentErrorInfo
 from .runtime.events import EventStream
 from .runtime.transcript import get_current_system_prompt
-from .tools import AfterToolCall, BeforeToolCall
+from .harness.tool import AfterToolCall, BeforeToolCall
 from .types import AgentContext, AgentMessage, NextTurnUpdate, QueueMode, TurnResult
 
 TransformContext = Callable[..., Awaitable[list[AgentMessage]] | list[AgentMessage]]

@@ -33,7 +33,7 @@ messages = compact(messages)
 
 ## 2. Beta 把 Compaction 也记录成 Entry
 
-[`../../src/beta_agent/compaction.py`](../../src/beta_agent/compaction.py) 会生成 summary，并通过 `SessionTree.append_compaction()` 追加一条新的 Entry。
+[`../../src/beta_agent/harness/compation.py`](../../src/beta_agent/harness/compation.py) 会生成 summary，并通过 `SessionTree.append_compaction()` 追加一条新的 Entry。
 
 它记录：
 
@@ -167,7 +167,7 @@ Compaction 改变 Session 到 canonical messages 的长期重建语义。
 
 ### cut point 与 reconstruction 的具体实现
 
-[`compact_session()`](../../src/beta_agent/compaction.py) 先收集当前 branch 中的 message Entry，从尾部倒推希望保留的数量，再继续向前寻找 user message：
+[`compact_session()`](../../src/beta_agent/harness/compation.py) 先收集当前 branch 中的 message Entry，从尾部倒推希望保留的数量，再继续向前寻找 user message：
 
 ```python
 target_pos = max(0, len(message_entries) - keep_last_messages)

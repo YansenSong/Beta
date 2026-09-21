@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-from beta_agent.tools import Tool
+from beta_agent.harness.tool import Tool
 
 from .bash import BASH_MAX_BYTES, BashArgs, create_bash_tool
 from .edit import EditArgs, EditItem, create_edit_tool, normalize_edit_arguments, prepare_edit_arguments

@@ -432,7 +432,7 @@ terminate=True 是 Tool 或策略告诉 Loop：“这次正常工作到这里结
 - [../../src/beta_agent/events.py](../../src/beta_agent/events.py)：EventStream 如何持有 runner task，以及 cancel() 怎样触发 on_cancel 和 task.cancel()；
 - [../../src/beta_agent/cancellation.py](../../src/beta_agent/cancellation.py)：Token 如何保存 cancelled 状态；
 - [../../src/beta_agent/model.py](../../src/beta_agent/model.py)：Model Adapter 如何在多个阶段检查 Token；
-- [../../src/beta_agent/tools.py](../../src/beta_agent/tools.py)：Tool batch 如何取消 child task，并为未完成调用补出 aborted result。
+- [../../src/beta_agent/harness/tool.py](../../src/beta_agent/harness/tool.py)：Tool batch 如何取消 child task，并为未完成调用补出 aborted result。
 
 ## 10. 掌握标准
 

@@ -25,14 +25,14 @@ def test_root_exports_use_canonical_modules():
 
 
 def test_feature_modules_are_packages_with_stable_exports():
-    from beta_agent.compaction import compact_session
-    from beta_agent.compaction.session import compact_session as canonical_compact_session
-    from beta_agent.session import SessionTree
-    from beta_agent.session.tree import SessionTree as CanonicalSessionTree
-    from beta_agent.skills import SkillCatalog
-    from beta_agent.skills.catalog import SkillCatalog as CanonicalSkillCatalog
-    from beta_agent.tools import ToolRuntime
-    from beta_agent.tools.runtime import ToolRuntime as CanonicalToolRuntime
+    from beta_agent.harness.compation import compact_session
+    from beta_agent.harness.compation import compact_session as canonical_compact_session
+    from beta_agent.harness.session import SessionTree
+    from beta_agent.harness.session import SessionTree as CanonicalSessionTree
+    from beta_agent.harness.skill import SkillCatalog
+    from beta_agent.harness.skill import SkillCatalog as CanonicalSkillCatalog
+    from beta_agent.harness.tool import ToolRuntime
+    from beta_agent.harness.tool import ToolRuntime as CanonicalToolRuntime
 
     assert compact_session is canonical_compact_session
     assert SessionTree is CanonicalSessionTree
@@ -51,8 +51,8 @@ async def test_agent_facade_delegates_to_split_loop():
 
 
 def test_durable_storage_is_separate_from_harness_runtime():
-    from beta_agent.durable import DurableStorage, MemoryStorage, SQLiteStorage
-    from beta_agent.harness.runtime import DurableAgentHarness, recover_durable_runtime
+    from beta_agent.harness.durable import DurableStorage, MemoryStorage, SQLiteStorage
+    from beta_agent.harness.durable.runtime import DurableAgentHarness, recover_durable_runtime
 
     assert DurableStorage is not None
     assert MemoryStorage is not None

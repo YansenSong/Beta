@@ -1,14 +1,14 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Sequence
-from ...runtime.cancellation import CancellationToken
-from ...runtime.cancellation import call_with_optional_cancellation
-from ...messages import utc_now_iso
+from ....runtime.cancellation import CancellationToken
+from ....runtime.cancellation import call_with_optional_cancellation
+from ....messages import utc_now_iso
 from ...session import SessionTree, agent_message_from_dict
-from ...tools import Tool, ToolExecutionContext
-from ...types import AgentContext, ToolCall, ToolResult
+from ...tool import Tool, ToolExecutionContext
+from ....types import AgentContext, ToolCall, ToolResult
 from .tools import DurableToolCoordinator, OperationHandle
-from ...durable import DurableStorage
+from ..types import DurableStorage
 from .outbox import SessionOutboxPublisher
 
 @dataclass(slots=True)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from beta_agent.tools import Tool, ToolExecutionContext
+from beta_agent.harness.tool import Tool, ToolExecutionContext
 from beta_agent.types import ToolResult
 
 BASH_MAX_BYTES = 64 * 1024

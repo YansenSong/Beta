@@ -12,7 +12,7 @@ from .providers.policy import ProviderRequestOptions, merge_provider_request_opt
 from .runtime.cancellation import CancellationToken, accepts_cancellation
 from .runtime.errors import AgentErrorInfo, ErrorStage, RunStatus
 from .runtime.transcript import collapse_transcript, declare_tool_changes, get_current_system_prompt
-from .tools import ToolRuntime
+from .harness.tool import ToolRuntime
 from .types import AgentEvent, AgentMessage, ModelEvent, NextTurnUpdate, ToolBatchResult, TurnResult
 
 
