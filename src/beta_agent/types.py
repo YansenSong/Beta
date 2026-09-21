@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .model import ModelAdapter
+    from .providers.model import ModelAdapter
     from .tools import Tool
-    from .provider_policy import ProviderRequestOptionsPatch
+    from .providers.policy import ProviderRequestOptionsPatch
 
 from .messages import (
     AgentContent,
@@ -21,7 +21,7 @@ from .messages import (
     ToolCall,
     utc_now_iso,
 )
-from .errors import AgentErrorInfo, RunStatus
+from .runtime.errors import AgentErrorInfo, RunStatus
 
 QueueMode = Literal["all", "one-at-a-time"]
 
@@ -63,7 +63,7 @@ class AgentContext:
         # directly. Runtime state is immediately represented as a transcript message.
         self.messages = list(messages or [])
         self.tools = list(tools or [])
-        from .transcript import create_initial_system_message, has_replayable_system_state
+        from .runtime.transcript import create_initial_system_message, has_replayable_system_state
 
         if system_prompt is not None and not has_replayable_system_state(self.messages):
             baseline = create_initial_system_message(system_prompt, self.tools)
@@ -74,7 +74,7 @@ class AgentContext:
     def system_prompt(self) -> str:
         """Read-only compatibility view replayed from transcript system messages."""
 
-        from .transcript import get_current_system_prompt
+        from .runtime.transcript import get_current_system_prompt
 
         return get_current_system_prompt(self.messages)
 

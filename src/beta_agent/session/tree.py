@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from .messages import (
+from ..messages import (
     AgentMessage,
     ImageContent,
     Message,
@@ -18,7 +18,7 @@ from .messages import (
     ToolReference,
     utc_now_iso,
 )
-from .transcript import get_current_system_prompt, get_current_tool_declarations
+from ..runtime.transcript import get_current_system_prompt, get_current_tool_declarations
 
 CURRENT_SESSION_FORMAT_VERSION = 3
 

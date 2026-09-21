@@ -1,29 +1,4 @@
-from __future__ import annotations
+"""Compatibility facade for :mod:`beta_agent.runtime.errors`."""
+from .runtime.errors import AgentErrorInfo, ErrorStage, RunStatus
 
-from dataclasses import dataclass
-from typing import Literal
-
-ErrorStage = Literal[
-    "runtime",
-    "model",
-    "transform_context",
-    "convert_to_llm",
-    "prepare_next_turn",
-    "should_stop_after_turn",
-    "steering_provider",
-    "follow_up_provider",
-    "before_tool_call",
-    "tool_execute",
-    "after_tool_call",
-    "extension_bridge",
-    "event_listener",
-]
-RunStatus = Literal["completed", "error", "aborted"]
-
-
-@dataclass(slots=True)
-class AgentErrorInfo:
-    stage: ErrorStage
-    message: str
-    exception_type: str
-    retryable: bool = False
+__all__ = ["AgentErrorInfo", "ErrorStage", "RunStatus"]
