@@ -9,6 +9,7 @@ from ..tools import Tool, ToolExecutionContext
 from ..types import AgentContext, ToolCall, ToolResult
 from .coordinator import DurableToolCoordinator, OperationHandle
 from .storage import DurableStorage
+from .outbox import SessionOutboxPublisher
 
 @dataclass(slots=True)
 class RecoveryReport:
@@ -27,7 +28,7 @@ async def recover_durable_runtime(storage: DurableStorage, session: SessionTree,
         else:
             try: args = tool.args_model.model_validate(operation.arguments)
             except Exception: reason = "schema_drift"
-        coordinator = DurableToolCoordinator(storage, task_id=operation.task_id, run_id=operation.run_id)
+        coordinator = DurableToolCoordinator(storage, task_id=operation.task_id, run_id=operation.run_id, batch_id=operation.batch_id)
         handle = OperationHandle(replace(operation, attempt=operation.attempt + 1, updated_at=utc_now_iso()), True)
         if reason:
             result = ToolResult(content="Tool execution was interrupted after its durable intent was recorded. The runtime did not replay this unsafe operation because its external side effect may already have occurred. Inspect the environment before retrying.",
@@ -46,12 +47,19 @@ async def recover_durable_runtime(storage: DurableStorage, session: SessionTree,
                     details={"stage": "tool_execute", "exception_type": type(exc).__name__}), True
             finally: await ctx.close_updates()
             if after_tool_call is not None:
-                patch = await call_with_optional_cancellation(
-                    after_tool_call,
-                    ToolCall(operation.tool_call_id, operation.tool_name, operation.arguments),
-                    args, result, is_error, AgentContext(messages=session.reconstruct_messages(), tools=tools),
-                    cancellation=ctx.cancellation,
-                )
+                try:
+                    patch = await call_with_optional_cancellation(
+                        after_tool_call,
+                        ToolCall(operation.tool_call_id, operation.tool_name, operation.arguments),
+                        args, result, is_error, AgentContext(messages=session.reconstruct_messages(), tools=tools),
+                        cancellation=ctx.cancellation,
+                    )
+                except Exception as exc:
+                    result = ToolResult(content=f"Tool executed, but after_tool_call hook failed: {exc}",
+                        details={"stage": "after_tool_call", "exception_type": type(exc).__name__,
+                                 "tool_executed": True, "original_result_details": result.details})
+                    is_error = True
+                    patch = None
                 if patch:
                     from ..messages import normalize_content_blocks
                     if patch.content is not None: result.content = normalize_content_blocks(patch.content)
@@ -61,10 +69,9 @@ async def recover_durable_runtime(storage: DurableStorage, session: SessionTree,
                     if patch.usage is not None: result.usage = dict(patch.usage)
             await coordinator.settle_operation(handle, result, is_error)
             report.replayed_operations.append(operation.id)
+    publisher = SessionOutboxPublisher(storage, session, session_file)
     for outbox in await storage.scan_pending_outbox():
-        session.append_message(agent_message_from_dict(outbox.message))
-        session.save_jsonl(session_file)
-        await storage.mark_outbox_published(outbox.operation_id, utc_now_iso())
+        await publisher.publish_record(outbox)
         report.published_messages.append(outbox.durable_message_id)
     for task in await storage.scan_tasks():
         if task.status == "running":

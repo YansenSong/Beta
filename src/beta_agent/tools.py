@@ -209,6 +209,10 @@ class ToolRuntime:
         if not calls:
             return ToolBatchResult(messages=[])
 
+        begin_batch = getattr(self.coordinator, "begin_batch", None)
+        if begin_batch is not None:
+            begin_batch()
+
         force_sequential = self.execution_mode == "sequential" or any(
             next((t for t in context.tools if t.name == call.name), None)
             and next(t for t in context.tools if t.name == call.name).execution_mode == "sequential"
@@ -477,6 +481,7 @@ class ToolRuntime:
         # after hook 位于 Tool 真正执行之后、tool_execution_end 事件之前，
         # 可以统一补充 metadata、改写展示内容或设置 terminate，而不用侵入具体 Tool。
         if self.after_tool_call:
+            patch = None
             try:
                 patch = await call_with_optional_cancellation(
                     self.after_tool_call,
@@ -490,19 +495,19 @@ class ToolRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                return _Finalized(
-                    prepared.call,
-                    ToolResult(
-                        content=f"Tool executed, but after_tool_call hook failed: {exc}",
-                        details={
-                            "stage": "after_tool_call",
-                            "exception_type": type(exc).__name__,
-                            "tool_executed": True,
-                            "original_result_details": result.details,
-                        },
-                    ),
-                    True,
+                # The external effect has already returned.  Normalize the hook
+                # failure, then continue through durable settlement so recovery
+                # can never execute the effect a second time.
+                result = ToolResult(
+                    content=f"Tool executed, but after_tool_call hook failed: {exc}",
+                    details={
+                        "stage": "after_tool_call",
+                        "exception_type": type(exc).__name__,
+                        "tool_executed": True,
+                        "original_result_details": result.details,
+                    },
                 )
+                is_error = True
             if patch:
                 if patch.content is not None:
                     result.content = normalize_content_blocks(patch.content)

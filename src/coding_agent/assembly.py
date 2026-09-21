@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,7 @@ from beta_agent.agent import Agent
 from beta_agent.events import EventStream
 from beta_agent.durable import SQLiteStorage
 from beta_agent.durable.coordinator import DurableToolCoordinator
+from beta_agent.durable.harness import DurableAgentHarness, DurableExecutionSnapshot, OperationAdmission
 from beta_agent.durable.records import TaskOutcome, TaskRecord
 from beta_agent.durable.recovery import RecoveryReport, recover_durable_runtime
 from beta_agent.messages import utc_now_iso
@@ -70,47 +72,75 @@ class CodingAgentRuntime:
     durable_storage: SQLiteStorage | None = None
     recovery_report: RecoveryReport | None = None
     durable_session_id: str | None = None
+    durable_harness: DurableAgentHarness | None = None
     _closed: bool = field(default=False, init=False, repr=False)
+    _active_durable_operation_id: str | None = field(default=None, init=False, repr=False)
 
     def stream(self, prompt: str):
-        if self.durable_storage is None:
+        if self.durable_harness is None:
             return self.host.stream(prompt)
-
-        child = None
         async def drive(emit):
-            nonlocal child
-            task_id = uuid.uuid4().hex
-            now = utc_now_iso()
-            task = TaskRecord(task_id, self.durable_session_id or task_id,
-                "agent_run", 1, "running", {"prompt": prompt},
-                {"phase": "agent_loop", "session_leaf_id": self.session.leaf_id,
-                 "started_message_count": len(self.agent.messages)}, None, False, False, now, now)
-            await self.durable_storage.create_task(task)
-            self.agent.config.tool_coordinator = DurableToolCoordinator(self.durable_storage, task_id=task_id, run_id=task_id)
-            child = self.host.stream(prompt)
+            admission=await self.durable_harness.accept(prompt)
+            self._active_durable_operation_id=admission.operation_id
             try:
-                async for event in child:
-                    await emit(event)
-                result = await child.result()
-                await self.durable_storage.terminalize_task(task_id, TaskOutcome("completed", result={"message_count": len(result)}), utc_now_iso())
-                return result
-            except BaseException as exc:
-                status = "aborted" if isinstance(exc, asyncio.CancelledError) else "failed"
-                await self.durable_storage.terminalize_task(task_id, TaskOutcome(status, reason=str(exc)), utc_now_iso())
-                raise
-            finally:
-                self.agent.config.tool_coordinator = None
+                before=len(self.session.reconstruct_messages())
+                await self.durable_harness.drive(admission.operation_id,emit=emit)
+                return self.session.reconstruct_messages()[before:]
+            finally:self._active_durable_operation_id=None
         import asyncio
-        return EventStream(drive, on_cancel=lambda _: child.cancel() if child is not None else None)
+        operation={"id":None}
+        async def cancel(_):
+            if operation["id"] is not None: await self.durable_harness.request_abort(operation["id"])
+        return EventStream(drive, on_cancel=lambda _: self.host.abort())
 
     async def run(self, prompt: str):
         return await self.stream(prompt).result()
 
     def continue_stream(self):
-        return self.host.continue_stream()
+        if self.durable_harness is None:return self.host.continue_stream()
+        async def drive(emit):
+            admission=await self.durable_harness.accept_continue();self._active_durable_operation_id=admission.operation_id
+            try:
+                before=len(self.session.reconstruct_messages())
+                await self.durable_harness.drive(admission.operation_id,emit=emit)
+                return self.session.reconstruct_messages()[before:]
+            finally:self._active_durable_operation_id=None
+        return EventStream(drive,on_cancel=lambda _:self.host.abort())
 
     def abort(self) -> None:
         self.host.abort()
+        if self.durable_harness is not None and self._active_durable_operation_id is not None:
+            try:
+                asyncio.get_running_loop().create_task(
+                    self.durable_harness.request_abort(self._active_durable_operation_id)
+                )
+            except RuntimeError:
+                pass
+
+    async def request_abort(self, operation_id: str | None = None) -> None:
+        if self.durable_harness is None:
+            self.host.abort(); return
+        await self.durable_harness.request_abort(operation_id)
+
+    async def accept(self, prompt) -> OperationAdmission:
+        if self.durable_harness is None: raise RuntimeError("Durable runtime is not enabled")
+        return await self.durable_harness.accept(prompt)
+
+    async def drive(self, operation_id: str, *, emit=None) -> TaskOutcome:
+        if self.durable_harness is None: raise RuntimeError("Durable runtime is not enabled")
+        return await self.durable_harness.drive(operation_id, emit=emit)
+
+    async def inspect(self, operation_id: str) -> DurableExecutionSnapshot:
+        if self.durable_harness is None: raise RuntimeError("Durable runtime is not enabled")
+        return await self.durable_harness.inspect(operation_id)
+
+    async def resume_pending(self, operation_id: str | None = None) -> TaskOutcome | None:
+        if self.durable_harness is None: raise RuntimeError("Durable runtime is not enabled")
+        if operation_id is None:
+            task=await self.durable_storage.get_open_task(self.durable_harness.session_id)
+            if task is None:return None
+            operation_id=task.id
+        return await self.durable_harness.drive(operation_id)
 
     async def wait_for_idle(self) -> None:
         await self.host.wait_for_idle()
@@ -267,7 +297,7 @@ async def create_coding_agent(options: CodingAgentOptions) -> CodingAgentRuntime
             initial_messages = session.reconstruct_messages()
 
     agent = Agent(model=options.model, system_prompt=system_prompt, tools=tools, messages=initial_messages)
-    host = bind_extensions(agent, runner, persist_messages=True)
+    host = bind_extensions(agent, runner, persist_messages=options.durable is None)
     storage = None
     recovery_report = None
     if options.durable is not None:
@@ -277,11 +307,12 @@ async def create_coding_agent(options: CodingAgentOptions) -> CodingAgentRuntime
         recovery_report = await recover_durable_runtime(
             storage, session, session_file, tools, after_tool_call=agent.config.after_tool_call
         )
-        async def persist_durable_message(event, cancellation=None):
-            del cancellation
-            if event.type == "message_end":
-                session.save_jsonl(session_file)
-        agent.subscribe(persist_durable_message)
+    durable_harness = None
+    durable_session_id = options.durable.session_id if options.durable is not None else None
+    if storage is not None:
+        durable_session_id = durable_session_id or "default"
+        durable_harness = DurableAgentHarness(storage=storage,agent=agent,host=host,session=session,
+            session_file=session_file,session_id=durable_session_id)
     return CodingAgentRuntime(
         agent=agent,
         host=host,
@@ -294,5 +325,6 @@ async def create_coding_agent(options: CodingAgentOptions) -> CodingAgentRuntime
         compaction=options.compaction,
         durable_storage=storage,
         recovery_report=recovery_report,
-        durable_session_id=(options.durable.session_id if options.durable is not None else None),
+        durable_session_id=durable_session_id,
+        durable_harness=durable_harness,
     )

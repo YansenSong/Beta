@@ -46,6 +46,9 @@ class AgentConfig:
     # 工具批次的默认执行方式：并行执行，或按照模型给出的顺序依次执行。
     tool_execution: Literal["parallel", "sequential"] = "parallel"
 
+    # 决定加载 Steering / Follow-up 消息时的行为：
+    # - "one-at-a-time"：每次只取一条消息，让模型在 turn 内只看到一条 Steering / Follow-up 消息。
+    # - "all"：一次性取出所有排队的消息，让模型在 turn 内看到所有排队的 Steering / Follow-up 消息。
     steering_mode: QueueMode = "one-at-a-time"
     follow_up_mode: QueueMode = "one-at-a-time"
 
@@ -72,7 +75,9 @@ class AgentConfig:
 
     # 可选 Hook，在工具执行完成后、结果事件发出前修改结果、错误状态或终止标记。
     after_tool_call: AfterToolCall | None = None
+
     provider_request_options: ProviderRequestOptions = dataclass_field(default_factory=ProviderRequestOptions)
+
     tool_coordinator: Any = None
 
 
