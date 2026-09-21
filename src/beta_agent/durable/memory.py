@@ -5,10 +5,19 @@ import copy
 from dataclasses import replace
 from typing import Sequence
 
-from .errors import DurableStateConflict
-from .records import OutboxRecord, TaskOutcome, TaskRecord, ToolOperationRecord
-from .serialization import JsonValue, validate_json
-from .state import operation_meta_from_json, operation_state_from_json
+from .types import (
+    DurableStateConflict,
+    JsonValue,
+    OutboxRecord,
+    TaskOutcome,
+    TaskRecord,
+    ToolOperationRecord,
+    _check_cas,
+    _validate_operation,
+    _validate_task,
+    validate_json,
+)
+
 
 
 class MemoryStorage:
@@ -153,23 +162,3 @@ class MemoryStorage:
             if record.status != "pending": raise ValueError("New outbox must be pending")
 
 
-def _check_cas(current: TaskRecord, replacement: TaskRecord, expected: int) -> None:
-    if current.revision != expected or replacement.revision != expected + 1: raise DurableStateConflict("Task revision conflict")
-    if current.abort_requested and not replacement.abort_requested: raise DurableStateConflict("abort_requested is monotonic")
-
-
-def _validate_task(record: TaskRecord) -> None:
-    validate_json(record.input); validate_json(record.checkpoint)
-    if record.revision < 0: raise ValueError("revision must be non-negative")
-    if record.status == "terminal":
-        if record.outcome is None or record.checkpoint is not None: raise ValueError("Terminal task requires outcome and no checkpoint")
-    elif record.checkpoint is None: raise ValueError("Live task requires checkpoint")
-    elif record.version == 2 and record.kind == "agent_run":
-        operation_meta_from_json(record.input); operation_state_from_json(record.checkpoint)
-
-
-def _validate_operation(record: ToolOperationRecord) -> None:
-    validate_json(record.source_arguments); validate_json(record.arguments); validate_json(record.result)
-    if record.status == "planned" and any(v is not None for v in (record.arguments, record.arguments_hash, record.replay_policy, record.result)): raise ValueError("Planned operation cannot contain effect data")
-    if record.status == "effect_pending" and (record.arguments is None or record.arguments_hash is None or record.replay_policy is None or record.result is not None): raise ValueError("Invalid effect_pending operation")
-    if record.status in ("outcome_ready", "completed") and (record.result is None or record.is_error is None or record.terminate is None): raise ValueError("Settled operation requires a result")

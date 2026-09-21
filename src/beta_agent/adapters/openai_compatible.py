@@ -11,9 +11,9 @@ from typing import Any
 
 import httpx
 
-from ..cancellation import CancellationToken
-from ..provider_messages import ProviderImageContent, ProviderMessage, ProviderTextContent
-from ..provider_policy import ProviderRequestOptions
+from ..runtime.cancellation import CancellationToken
+from ..providers.messages import ProviderImageContent, ProviderMessage, ProviderTextContent
+from ..providers.policy import ProviderRequestOptions
 from ..types import AgentMessage, ModelEvent, ToolCall
 
 

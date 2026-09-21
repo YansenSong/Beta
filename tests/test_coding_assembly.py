@@ -7,7 +7,7 @@ import pytest
 from pydantic import BaseModel
 
 from beta_agent import Message, ScriptedModelAdapter, Tool, ToolCall, ToolResult
-from beta_agent.transcript import get_current_tool_declarations
+from beta_agent.runtime.transcript import get_current_tool_declarations
 from beta_agent.extensions import ExtensionTool
 from coding_agent import (
     CodingAgentOptions,

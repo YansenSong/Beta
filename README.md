@@ -137,6 +137,25 @@ Core 不依赖 Coding Agent 产品层。
 
 ## Durable Runtime v1
 
+代码边界与 Pi 的 durable / agent harness 分层一致：
+
+```text
+beta_agent/durable/
+├── types.py      # persistence records + Storage protocol
+├── memory.py     # in-memory backend
+└── sqlite.py     # SQLite backend
+
+beta_agent/harness/runtime/
+├── drive.py      # durable agent drive
+├── recovery.py   # crash recovery
+├── tools.py      # durable tool coordination
+├── checkpoint.py # runtime checkpoint codec
+└── outbox.py     # session publication
+```
+
+`durable/` 只负责持久化契约和 backend；Agent 的恢复、checkpoint、tool coordination
+属于 harness runtime，不再放进 durable storage package。
+
 Durable mode 默认关闭。Coding Agent 可通过 `DurableRuntimeOptions(database_path=..., session_file=...)`
 显式启用。启用后，工具执行在外部 effect 前写入最终调用 intent，在 effect 后把完整结果与
 transactional outbox 同事务提交；Session 使用同目录临时文件、`fsync` 和原子替换保存，并通过

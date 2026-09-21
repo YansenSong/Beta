@@ -48,3 +48,14 @@ async def test_agent_facade_delegates_to_split_loop():
 
     assert result[-1].role == "assistant"
     assert result[-1].text == "ok"
+
+
+def test_durable_storage_is_separate_from_harness_runtime():
+    from beta_agent.durable import DurableStorage, MemoryStorage, SQLiteStorage
+    from beta_agent.harness.runtime import DurableAgentHarness, recover_durable_runtime
+
+    assert DurableStorage is not None
+    assert MemoryStorage is not None
+    assert SQLiteStorage is not None
+    assert DurableAgentHarness is not None
+    assert recover_durable_runtime is not None

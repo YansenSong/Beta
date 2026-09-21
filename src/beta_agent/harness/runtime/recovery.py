@@ -1,14 +1,14 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Sequence
-from ..cancellation import CancellationToken
-from ..cancellation import call_with_optional_cancellation
-from ..messages import utc_now_iso
-from ..session import SessionTree, agent_message_from_dict
-from ..tools import Tool, ToolExecutionContext
-from ..types import AgentContext, ToolCall, ToolResult
-from .coordinator import DurableToolCoordinator, OperationHandle
-from .storage import DurableStorage
+from ...runtime.cancellation import CancellationToken
+from ...runtime.cancellation import call_with_optional_cancellation
+from ...messages import utc_now_iso
+from ...session import SessionTree, agent_message_from_dict
+from ...tools import Tool, ToolExecutionContext
+from ...types import AgentContext, ToolCall, ToolResult
+from .tools import DurableToolCoordinator, OperationHandle
+from ...durable import DurableStorage
 from .outbox import SessionOutboxPublisher
 
 @dataclass(slots=True)
@@ -61,7 +61,7 @@ async def recover_durable_runtime(storage: DurableStorage, session: SessionTree,
                     is_error = True
                     patch = None
                 if patch:
-                    from ..messages import normalize_content_blocks
+                    from ...messages import normalize_content_blocks
                     if patch.content is not None: result.content = normalize_content_blocks(patch.content)
                     if patch.replace_details: result.details = patch.details
                     if patch.terminate is not None: result.terminate = patch.terminate

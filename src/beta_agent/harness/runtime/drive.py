@@ -5,20 +5,19 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Awaitable, Callable, Literal, Sequence
 
-from ..cancellation import CancellationToken
-from ..events import EventStream
-from ..messages import utc_now_iso
-from ..session import agent_message_to_dict
-from ..types import AgentEvent, AgentMessage
-from .coordinator import DurableToolCoordinator
+from ...runtime.cancellation import CancellationToken
+from ...messages import utc_now_iso
+from ...session import agent_message_to_dict
+from ...types import AgentEvent, AgentMessage
+from .tools import DurableToolCoordinator
 from .errors import DurableStaleOperation
 from .failpoints import Failpoint, NoopFailpoint
 from .outbox import SessionOutboxPublisher
-from .records import OutboxRecord, TaskOutcome, TaskRecord
-from .state import (AssistantEffectPendingState, CheckpointState, OperationMeta,
+from ...durable.types import OutboxRecord, TaskOutcome, TaskRecord
+from .checkpoint import (AssistantEffectPendingState, CheckpointState, OperationMeta,
                     StartingState, operation_meta_to_json, operation_state_from_json,
                     operation_state_to_json)
-from .storage import DurableStorage
+from ...durable import DurableStorage
 
 
 @dataclass(frozen=True, slots=True)

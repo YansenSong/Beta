@@ -1,0 +1,2 @@
+class DurableStaleOperation(RuntimeError):
+    pass

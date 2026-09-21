@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from ..cancellation import CancellationToken, call_with_optional_cancellation
+from ..runtime.cancellation import CancellationToken, call_with_optional_cancellation
 from ..tools import Tool
 from ..types import AgentMessage
 from .types import (

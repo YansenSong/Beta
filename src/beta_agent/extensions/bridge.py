@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..agent import Agent
-from ..cancellation import CancellationToken, call_with_optional_cancellation
-from ..events import EventStream
+from ..runtime.cancellation import CancellationToken, call_with_optional_cancellation
+from ..runtime.events import EventStream
 from ..tools import BeforeToolCallDecision, Tool
 from ..types import AgentEvent, AgentMessage
 from .runner import ExtensionRunner

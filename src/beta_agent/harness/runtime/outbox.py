@@ -3,12 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from ..messages import utc_now_iso
-from ..session import SessionTree, agent_message_from_dict
-from ..types import AgentEvent
+from ...messages import utc_now_iso
+from ...session import SessionTree, agent_message_from_dict
+from ...types import AgentEvent
 from .failpoints import Failpoint, NoopFailpoint
-from .records import OutboxRecord
-from .storage import DurableStorage
+from ...durable.types import OutboxRecord
+from ...durable import DurableStorage
 
 
 class SessionOutboxPublisher:

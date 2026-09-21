@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Union, cast
 
-from .serialization import JsonValue, validate_json
+from ...durable.types import JsonValue, validate_json
 
 
 class UnsupportedOperationStateError(ValueError):

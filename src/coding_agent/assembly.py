@@ -7,21 +7,24 @@ from pathlib import Path
 from typing import Any
 
 from beta_agent.agent import Agent
-from beta_agent.events import EventStream
-from beta_agent.durable import SQLiteStorage
-from beta_agent.durable.coordinator import DurableToolCoordinator
-from beta_agent.durable.harness import DurableAgentHarness, DurableExecutionSnapshot, OperationAdmission
-from beta_agent.durable.records import TaskOutcome, TaskRecord
-from beta_agent.durable.recovery import RecoveryReport, recover_durable_runtime
+from beta_agent.runtime.events import EventStream
+from beta_agent.durable import SQLiteStorage, TaskOutcome
+from beta_agent.harness.runtime import (
+    DurableAgentHarness,
+    DurableExecutionSnapshot,
+    OperationAdmission,
+    RecoveryReport,
+    recover_durable_runtime,
+)
 from beta_agent.messages import utc_now_iso
 import uuid
 from beta_agent.compaction import Summarizer, compact_session
 from beta_agent.extensions import ExtensionFactory, ExtensionHost, ExtensionRunner, RuntimeConfig, bind_extensions
-from beta_agent.model import ModelAdapter
+from beta_agent.providers.model import ModelAdapter
 from beta_agent.session import SessionTree
 from beta_agent.skills import Skill, SkillCatalog
 from beta_agent.tools import Tool
-from beta_agent.transcript import create_initial_system_message
+from beta_agent.runtime.transcript import create_initial_system_message
 from .prompt import build_coding_system_prompt
 from .tools import create_coding_tools
 

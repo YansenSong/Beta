@@ -7,9 +7,9 @@ import pytest
 from beta_agent import AgentMessage, Message, ScriptedModelAdapter, SessionTree
 from beta_agent.agent import Agent
 from beta_agent.durable import MemoryStorage
-from beta_agent.durable.errors import DurableStateConflict
-from beta_agent.durable.harness import DurableAgentHarness
-from beta_agent.durable.state import (AssistantEffectPendingState, CheckpointState,
+from beta_agent.durable import DurableStateConflict
+from beta_agent.harness.runtime import DurableAgentHarness
+from beta_agent.harness.runtime.checkpoint import (AssistantEffectPendingState, CheckpointState,
     OperationMeta, StartingState, ToolsState, operation_meta_from_json,
     operation_meta_to_json, operation_state_from_json, operation_state_to_json)
 from beta_agent.extensions.bridge import bind_extensions

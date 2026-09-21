@@ -28,8 +28,6 @@ from .providers.policy import (
     merge_provider_request_options,
 )
 from .durable import DurableStorage, MemoryStorage, SQLiteStorage
-from .durable.coordinator import DurableToolCoordinator
-from .durable.recovery import RecoveryReport, recover_durable_runtime
 from .skills import Skill, SkillCatalog
 from .tools import (
     AfterToolCallPatch,
@@ -70,11 +68,8 @@ __all__ = [
     "RetryPolicy",
     "merge_provider_request_options",
     "DurableStorage",
-    "DurableToolCoordinator",
     "MemoryStorage",
     "SQLiteStorage",
-    "RecoveryReport",
-    "recover_durable_runtime",
     "agent_message_from_dict",
     "agent_message_to_dict",
     "AgentConfig",

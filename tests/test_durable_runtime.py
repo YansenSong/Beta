@@ -3,9 +3,14 @@ from dataclasses import replace
 import pytest
 
 from beta_agent import AgentMessage, SessionTree, ToolCall
-from beta_agent.durable import MemoryStorage, SQLiteStorage
-from beta_agent.durable.records import OutboxRecord, TaskRecord, ToolOperationRecord
-from beta_agent.durable.serialization import arguments_hash
+from beta_agent.durable import (
+    MemoryStorage,
+    SQLiteStorage,
+    OutboxRecord,
+    TaskRecord,
+    ToolOperationRecord,
+    arguments_hash,
+)
 from beta_agent.messages import utc_now_iso
 from coding_agent.tools import create_coding_tools
 
