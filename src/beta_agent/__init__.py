@@ -1,9 +1,9 @@
 from .agent import Agent, AgentConfig
-from .cancellation import CancellationToken
+from .runtime.cancellation import CancellationToken
 from .compaction import compact_session
-from .errors import AgentErrorInfo, ErrorStage, RunStatus
-from .events import EventStream
-from .model import ModelAdapter, ScriptedModelAdapter
+from .runtime.errors import AgentErrorInfo, ErrorStage, RunStatus
+from .runtime.events import EventStream
+from .providers.model import ModelAdapter, ScriptedModelAdapter
 from .messages import (
     AgentContent,
     AgentMessage,
@@ -13,7 +13,7 @@ from .messages import (
     ToolDeclaration,
     ToolReference,
 )
-from .provider_messages import (
+from .providers.messages import (
     ProviderContent,
     ProviderImageContent,
     ProviderMessage,
@@ -21,7 +21,12 @@ from .provider_messages import (
     default_convert_to_llm,
 )
 from .session import SessionEntry, SessionTree, agent_message_from_dict, agent_message_to_dict
-from .provider_policy import ProviderRequestOptions, ProviderRequestOptionsPatch, RetryPolicy, merge_provider_request_options
+from .providers.policy import (
+    ProviderRequestOptions,
+    ProviderRequestOptionsPatch,
+    RetryPolicy,
+    merge_provider_request_options,
+)
 from .durable import DurableStorage, MemoryStorage, SQLiteStorage
 from .durable.coordinator import DurableToolCoordinator
 from .durable.recovery import RecoveryReport, recover_durable_runtime
@@ -46,7 +51,7 @@ from .types import (
     ToolResult,
     TurnResult,
 )
-from .transcript import (
+from .runtime.transcript import (
     ToolStateChanges,
     collapse_transcript,
     create_initial_system_message,

@@ -1,25 +1,27 @@
-from beta_agent import AgentMessage, ScriptedModelAdapter
+from beta_agent import (
+    AgentMessage,
+    CancellationToken,
+    EventStream,
+    ModelAdapter,
+    ProviderRequestOptions,
+    ScriptedModelAdapter,
+    collapse_transcript,
+)
 from beta_agent.agent import Agent
 
 
-def test_legacy_runtime_imports_forward_to_canonical_modules():
-    from beta_agent.cancellation import CancellationToken as LegacyCancellationToken
-    from beta_agent.events import EventStream as LegacyEventStream
-    from beta_agent.model import ModelAdapter as LegacyModelAdapter
-    from beta_agent.provider_policy import ProviderRequestOptions as LegacyProviderRequestOptions
-    from beta_agent.transcript import collapse_transcript as legacy_collapse_transcript
+def test_root_exports_use_canonical_modules():
+    from beta_agent.providers.model import ModelAdapter as CanonicalModelAdapter
+    from beta_agent.providers.policy import ProviderRequestOptions as CanonicalProviderRequestOptions
+    from beta_agent.runtime.cancellation import CancellationToken as CanonicalCancellationToken
+    from beta_agent.runtime.events import EventStream as CanonicalEventStream
+    from beta_agent.runtime.transcript import collapse_transcript as canonical_collapse_transcript
 
-    from beta_agent.providers.model import ModelAdapter
-    from beta_agent.providers.policy import ProviderRequestOptions
-    from beta_agent.runtime.cancellation import CancellationToken
-    from beta_agent.runtime.events import EventStream
-    from beta_agent.runtime.transcript import collapse_transcript
-
-    assert LegacyCancellationToken is CancellationToken
-    assert LegacyEventStream is EventStream
-    assert LegacyModelAdapter is ModelAdapter
-    assert LegacyProviderRequestOptions is ProviderRequestOptions
-    assert legacy_collapse_transcript is collapse_transcript
+    assert CancellationToken is CanonicalCancellationToken
+    assert EventStream is CanonicalEventStream
+    assert ModelAdapter is CanonicalModelAdapter
+    assert ProviderRequestOptions is CanonicalProviderRequestOptions
+    assert collapse_transcript is canonical_collapse_transcript
 
 
 def test_feature_modules_are_packages_with_stable_exports():
