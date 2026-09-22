@@ -4,6 +4,7 @@ import asyncio
 import json
 import inspect
 import random
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from collections.abc import AsyncIterator, Sequence
@@ -15,6 +16,39 @@ from ..runtime.cancellation import CancellationToken
 from ..providers.messages import ProviderImageContent, ProviderMessage, ProviderTextContent
 from ..providers.policy import ProviderRequestOptions
 from ..types import AgentMessage, ModelEvent, ToolCall
+
+
+@dataclass(slots=True)
+class _ToolCallAccumulator:
+    """Provider fragments plus the stable identity of one streamed call."""
+
+    provider_id: str = ""
+    provider_name: str = ""
+    arguments: str = ""
+    event_id: str = ""
+    event_name: str = ""
+    partial_arguments: dict[str, Any] = field(default_factory=dict)
+    started: bool = False
+    ended: bool = False
+
+    def update(self, index: int, item: dict[str, Any]) -> None:
+        function = item.get("function") or {}
+        provider_id = item.get("id")
+        if not self.event_id:
+            self.event_id = str(provider_id or f"call_{index}")
+        if provider_id:
+            self.provider_id = str(provider_id)
+
+        name = function.get("name")
+        if name:
+            name = str(name)
+            if not self.event_name:
+                self.event_name = name
+            self.provider_name += name
+
+        arguments = function.get("arguments")
+        if arguments:
+            self.arguments += str(arguments)
 
 
 class OpenAICompatibleAdapter:
@@ -64,10 +98,8 @@ class OpenAICompatibleAdapter:
         thinking = ""
         text_started = False
         thinking_started = False
-        tool_parts: dict[int, dict[str, Any]] = {}
-        tool_started: set[int] = set()
-        tool_ended: set[int] = set()
-        finish_reason = "stop"
+        tool_parts: dict[int, _ToolCallAccumulator] = {}
+        finish_reason: str | None = None
         try:
             options = request_options or ProviderRequestOptions()
             if options.transport == "websocket":
@@ -126,8 +158,12 @@ class OpenAICompatibleAdapter:
                         value = self.on_response(response.status_code, dict(response.headers))
                         if inspect.isawaitable(value):
                             await value
-                    partial = AgentMessage.assistant("", stop_reason="stop")
-                    yield ModelEvent(type="start", partial=partial)
+                    yield ModelEvent(
+                        type="start",
+                        partial=self._snapshot(
+                            text, thinking, tool_parts, finish_reason=finish_reason
+                        ),
+                    )
                     async for line in response.aiter_lines():
                         if cancellation is not None:
                             cancellation.throw_if_cancelled()
@@ -152,13 +188,17 @@ class OpenAICompatibleAdapter:
                                 thinking_started = True
                                 yield ModelEvent(
                                     type="thinking_start",
-                                    partial=AgentMessage.assistant(text, thinking=thinking),
+                                    partial=self._snapshot(
+                                        text, thinking, tool_parts, finish_reason=finish_reason
+                                    ),
                                     content_index=0,
                                 )
                             thinking += str(reasoning_delta)
                             yield ModelEvent(
                                 type="thinking_delta",
-                                partial=AgentMessage.assistant(text, thinking=thinking),
+                                partial=self._snapshot(
+                                    text, thinking, tool_parts, finish_reason=finish_reason
+                                ),
                                 content_index=0,
                                 delta=str(reasoning_delta),
                             )
@@ -168,119 +208,86 @@ class OpenAICompatibleAdapter:
                                 text_started = True
                                 yield ModelEvent(
                                     type="text_start",
-                                    partial=AgentMessage.assistant(text, thinking=thinking),
+                                    partial=self._snapshot(
+                                        text, thinking, tool_parts, finish_reason=finish_reason
+                                    ),
                                     content_index=0,
                                 )
                             text += str(content_delta)
                             yield ModelEvent(
                                 type="text_delta",
-                                partial=AgentMessage.assistant(text, thinking=thinking),
+                                partial=self._snapshot(
+                                    text, thinking, tool_parts, finish_reason=finish_reason
+                                ),
                                 content_index=0,
                                 delta=str(content_delta),
                             )
                         for item in delta.get("tool_calls") or []:
                             index = int(item.get("index", 0))
-                            for completed_index in sorted(
-                                current for current in tool_parts if current < index and current not in tool_ended
-                            ):
-                                raw_completed = tool_parts[completed_index]["arguments"]
-                                try:
-                                    parsed_completed = json.loads(raw_completed) if raw_completed else {}
-                                except json.JSONDecodeError:
-                                    continue
-                                if not isinstance(parsed_completed, dict):
-                                    continue
-                                completed = self._tool_calls({completed_index: tool_parts[completed_index]})
-                                if completed:
-                                    completed_part = tool_parts[completed_index]
-                                    yield ModelEvent(
-                                        type="toolcall_end",
-                                        partial=AgentMessage.assistant(
-                                            text,
-                                            thinking=thinking,
-                                            tool_calls=self._partial_tool_calls(tool_parts),
-                                        ),
-                                        content_index=completed_index,
-                                        tool_call_id=completed_part.get("_event_id", completed[0].id),
-                                        tool_name=completed_part.get("_event_name") or completed[0].name or None,
-                                        tool_call=completed[0],
-                                        completed_tool_call=completed[0],
-                                    )
-                                tool_ended.add(completed_index)
-                            acc = tool_parts.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                            acc = tool_parts.setdefault(index, _ToolCallAccumulator())
+                            acc.update(index, item)
                             function = item.get("function") or {}
-                            if "_event_id" not in acc:
-                                acc["_event_id"] = item.get("id") or f"call_{index}"
-                            if "_event_name" not in acc:
-                                acc["_event_name"] = function.get("name") or ""
-                            if item.get("id"):
-                                acc["id"] = item["id"]
-                            if function.get("name"):
-                                acc["name"] += function["name"]
-                            if function.get("arguments"):
-                                acc["arguments"] += function["arguments"]
-                            if index not in tool_started:
-                                tool_started.add(index)
+                            if not acc.started:
+                                acc.started = True
                                 yield ModelEvent(
                                     type="toolcall_start",
-                                    partial=AgentMessage.assistant(
+                                    partial=self._snapshot(
                                         text,
-                                        thinking=thinking,
-                                        tool_calls=self._partial_tool_calls(tool_parts, placeholder_index=index),
+                                        thinking,
+                                        tool_parts,
+                                        finish_reason=finish_reason,
+                                        placeholder_index=index,
                                     ),
                                     content_index=index,
-                                    tool_call_id=acc["_event_id"],
-                                    tool_name=acc["_event_name"] or None,
+                                    tool_call_id=acc.event_id,
+                                    tool_name=acc.event_name or None,
                                 )
                             tool_delta = function.get("arguments") or function.get("name")
                             if tool_delta:
                                 yield ModelEvent(
                                     type="toolcall_delta",
-                                    partial=AgentMessage.assistant(
-                                        text,
-                                        thinking=thinking,
-                                        tool_calls=self._partial_tool_calls(tool_parts),
+                                    partial=self._snapshot(
+                                        text, thinking, tool_parts, finish_reason=finish_reason
                                     ),
                                     content_index=index,
-                                    tool_call_id=acc["_event_id"],
-                                    tool_name=acc["_event_name"] or None,
+                                    tool_call_id=acc.event_id,
+                                    tool_name=acc.event_name or None,
                                     delta=str(tool_delta),
                                 )
                         if choice.get("finish_reason"):
                             finish_reason = choice["finish_reason"]
-                        partial = AgentMessage.assistant(
+                        partial = self._snapshot(
                             text,
-                            thinking=thinking,
-                            tool_calls=self._partial_tool_calls(tool_parts),
-                            stop_reason=self._map_finish_reason(finish_reason),
+                            thinking,
+                            tool_parts,
+                            finish_reason=finish_reason,
                         )
                 finally:
                     await response.aclose()
 
-            partial = AgentMessage.assistant(
+            partial = self._snapshot(
                 text,
-                thinking=thinking,
-                tool_calls=self._tool_calls(tool_parts),
-                stop_reason=self._map_finish_reason(finish_reason),
+                thinking,
+                tool_parts,
+                finish_reason=finish_reason,
+                final=True,
             )
             if text_started:
                 yield ModelEvent(type="text_end", partial=partial, content_index=0)
             if thinking_started:
                 yield ModelEvent(type="thinking_end", partial=partial, content_index=0)
-            for index in sorted(tool_started):
-                if index in tool_ended:
+            for index in sorted(tool_parts):
+                part = tool_parts[index]
+                if part.ended:
                     continue
-                calls = self._tool_calls({index: tool_parts[index]})
+                calls = self._tool_calls({index: part})
+                part.ended = True
                 yield ModelEvent(
                     type="toolcall_end",
                     partial=partial,
                     content_index=index,
-                    tool_call_id=tool_parts[index].get("_event_id") or (
-                        calls[0].id if calls else tool_parts[index].get("id") or f"call_{index}"
-                    ),
-                    tool_name=tool_parts[index].get("_event_name") or (
-                        calls[0].name if calls else tool_parts[index].get("name") or None
-                    ),
+                    tool_call_id=part.event_id or (calls[0].id if calls else f"call_{index}"),
+                    tool_name=part.event_name or (calls[0].name if calls else None),
                     tool_call=calls[0] if calls else None,
                     completed_tool_call=calls[0] if calls else None,
                 )
@@ -377,23 +384,52 @@ class OpenAICompatibleAdapter:
             },
         }
 
-    def _tool_calls(self, parts: dict[int, dict[str, Any]]) -> list[ToolCall]:
+    def _snapshot(
+        self,
+        text: str,
+        thinking: str,
+        parts: dict[int, _ToolCallAccumulator],
+        *,
+        finish_reason: str | None,
+        final: bool = False,
+        placeholder_index: int | None = None,
+    ) -> AgentMessage:
+        if final:
+            reason = finish_reason or ("tool_calls" if parts else "stop")
+            tool_calls = self._tool_calls(parts)
+        else:
+            reason = self._map_finish_reason(finish_reason) if finish_reason else None
+            tool_calls = self._partial_tool_calls(parts, placeholder_index=placeholder_index)
+        return AgentMessage.assistant(
+            text,
+            thinking=thinking,
+            tool_calls=tool_calls,
+            stop_reason=reason,
+        )
+
+    def _tool_calls(self, parts: dict[int, _ToolCallAccumulator]) -> list[ToolCall]:
         calls: list[ToolCall] = []
         for index in sorted(parts):
             part = parts[index]
-            raw = part["arguments"] or "{}"
+            raw = part.arguments or "{}"
             try:
                 arguments = json.loads(raw)
                 if not isinstance(arguments, dict):
                     arguments = {"value": arguments}
             except json.JSONDecodeError:
                 arguments = {"__raw__": raw}
-            calls.append(ToolCall(id=part["id"] or f"call_{index}", name=part["name"], arguments=arguments))
+            calls.append(
+                ToolCall(
+                    id=part.event_id or part.provider_id or f"call_{index}",
+                    name=part.provider_name,
+                    arguments=arguments,
+                )
+            )
         return calls
 
     def _partial_tool_calls(
         self,
-        parts: dict[int, dict[str, Any]],
+        parts: dict[int, _ToolCallAccumulator],
         *,
         placeholder_index: int | None = None,
     ) -> list[ToolCall]:
@@ -402,17 +438,19 @@ class OpenAICompatibleAdapter:
         calls: list[ToolCall] = []
         for index in sorted(parts):
             part = parts[index]
-            raw = "" if index == placeholder_index else part["arguments"]
+            raw = "" if index == placeholder_index else part.arguments
             try:
                 arguments = json.loads(raw) if raw else {}
                 if not isinstance(arguments, dict):
                     arguments = {}
             except json.JSONDecodeError:
-                arguments = {}
+                arguments = dict(part.partial_arguments)
+            else:
+                part.partial_arguments = dict(arguments)
             calls.append(
                 ToolCall(
-                    id=part.get("_event_id") or part["id"] or f"call_{index}",
-                    name=part.get("_event_name", part["name"]),
+                    id=part.event_id or part.provider_id or f"call_{index}",
+                    name=part.event_name or part.provider_name,
                     arguments=arguments,
                 )
             )
