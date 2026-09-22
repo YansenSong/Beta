@@ -42,7 +42,7 @@ class _ToolCallAccumulator:
         name = function.get("name")
         if name:
             name = str(name)
-            if not self.event_name:
+            if not self.event_name and not self.started:
                 self.event_name = name
             self.provider_name += name
 
@@ -287,7 +287,7 @@ class OpenAICompatibleAdapter:
                     partial=partial,
                     content_index=index,
                     tool_call_id=part.event_id or (calls[0].id if calls else f"call_{index}"),
-                    tool_name=part.event_name or (calls[0].name if calls else None),
+                    tool_name=part.event_name or None,
                     tool_call=calls[0] if calls else None,
                     completed_tool_call=calls[0] if calls else None,
                 )
@@ -450,7 +450,7 @@ class OpenAICompatibleAdapter:
             calls.append(
                 ToolCall(
                     id=part.event_id or part.provider_id or f"call_{index}",
-                    name=part.event_name or part.provider_name,
+                    name=part.event_name,
                     arguments=arguments,
                 )
             )
