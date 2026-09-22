@@ -527,11 +527,10 @@ class _AgentLoopMixin:
         cancellation.throw_if_cancelled()
         deltas = declare_tool_changes(self.context, [])
         for message in deltas:
-            insertion = next(
-                (index for index, existing in enumerate(self.context.messages) if existing.role != "system"),
-                len(self.context.messages),
-            )
-            self.context.messages.insert(insertion, message)
+            # This is a request-time projection of the replacement context.  It
+            # must replay after every historical message, including older system
+            # tool deltas, so the final transcript state matches context.tools.
+            self.context.messages.append(message)
             if not any(existing is message for existing in state.new_messages):
                 state.new_messages.append(message)
             await emit(AgentEvent(type="message_start", message=message))
