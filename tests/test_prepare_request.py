@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from beta_agent import (
     Agent,
+    AgentContext,
     AgentConfig,
     AgentMessage,
     ProviderRequestOptions,
@@ -14,6 +15,8 @@ from beta_agent import (
     Tool,
     ToolCall,
     ToolResult,
+    get_current_tool_declarations,
+    to_tool_declaration,
 )
 
 
@@ -92,8 +95,6 @@ async def test_prepare_request_can_replace_context_and_model():
     replacement = RecordingModel([AgentMessage.assistant("replacement")])
     original = RecordingModel([AgentMessage.assistant("unused")])
 
-    from beta_agent import AgentContext
-
     replacement_context = AgentContext(messages=[AgentMessage.user("from hook")], tools=[])
 
     async def prepare(request, cancellation=None):
@@ -111,3 +112,77 @@ async def test_prepare_request_can_replace_context_and_model():
     assert original.calls == []
     assert len(replacement.calls) == 1
     assert [message.text for message in agent.context.messages if message.role == "user"] == ["from hook"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_context_replacement_reconciles_tools_into_transcript_and_reset():
+    async def execute(args, ctx):
+        return ToolResult("ok")
+
+    tool = Tool("work", "work", Empty, execute)
+    replacement = AgentContext(messages=[AgentMessage.user("replacement")], tools=[tool])
+
+    async def prepare(request, cancellation=None):
+        return RequestUpdate(context=replacement)
+
+    agent = Agent(
+        model=ScriptedModelAdapter([AgentMessage.assistant("done")]),
+        config=AgentConfig(prepare_request=prepare),
+    )
+    stream = agent.stream("original")
+    events = [event async for event in stream]
+    generated = await stream.result()
+
+    declarations = get_current_tool_declarations(agent.messages)
+    assert [item.name for item in declarations] == ["work"]
+    delta = next(
+        message
+        for message in generated
+        if message.role == "system" and message.tools_added
+    )
+    assert [item.name for item in delta.tools_added] == ["work"]
+    assert sum(
+        event.type == "message_start" and event.message is delta
+        for event in events
+    ) == 1
+    assert sum(
+        event.type == "message_end" and event.message is delta
+        for event in events
+    ) == 1
+
+    agent.reset()
+    assert [item.name for item in get_current_tool_declarations(agent.messages)] == ["work"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_context_replacement_removes_declared_tools_without_duplicate_delta():
+    async def execute(args, ctx):
+        return ToolResult("ok")
+
+    tool = Tool("work", "work", Empty, execute)
+    declaration = to_tool_declaration(tool)
+    replacement = AgentContext(
+        messages=[
+            AgentMessage.system("", tools_added=[declaration]),
+            AgentMessage.user("replacement"),
+        ],
+        tools=[],
+    )
+
+    async def prepare(request, cancellation=None):
+        return RequestUpdate(context=replacement)
+
+    agent = Agent(
+        model=ScriptedModelAdapter([AgentMessage.assistant("done")]),
+        config=AgentConfig(prepare_request=prepare),
+    )
+    generated = await agent.run("original")
+
+    assert get_current_tool_declarations(agent.messages) == []
+    removals = [
+        message
+        for message in generated
+        if message.role == "system" and message.tools_removed
+    ]
+    assert len(removals) == 1
+    assert [item.name for item in removals[0].tools_removed] == ["work"]

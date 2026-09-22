@@ -265,3 +265,67 @@ async def test_stream_subscriber_failure_closes_partial_assistant_once():
     assert agent.last_error is not None and agent.last_error.stage == "event_listener"
     assert sum(event.type == "agent_end" for event in events) == 1
     assert sum(event.type == "turn_end" for event in events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_kind", ["steering", "follow_up", "prepare_next_turn"])
+async def test_scheduling_failure_gets_a_complete_failure_turn(failure_kind):
+    config_kwargs = {}
+    tools = []
+    responses = [AgentMessage.assistant("done")]
+    if failure_kind == "steering":
+        reads = 0
+
+        async def steering(cancellation=None):
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                return []
+            raise RuntimeError("steering boom")
+
+        config_kwargs["get_steering_messages"] = steering
+    elif failure_kind == "follow_up":
+        async def follow_up(cancellation=None):
+            raise RuntimeError("follow-up boom")
+
+        config_kwargs["get_follow_up_messages"] = follow_up
+    else:
+        async def execute(args, ctx):
+            return ToolResult("ok")
+
+        call = ToolCall("call", "work", {})
+        responses = [AgentMessage.assistant(tool_calls=[call], stop_reason="tool_calls")]
+        tools = [Tool("work", "work", NoArgs, execute)]
+
+        async def prepare_next(turn, cancellation=None):
+            raise RuntimeError("prepare_next_turn boom")
+
+        config_kwargs["prepare_next_turn"] = prepare_next
+
+    agent = Agent(
+        model=ScriptedModelAdapter(responses),
+        tools=tools,
+        config=AgentConfig(**config_kwargs),
+    )
+    events, messages = await _collect(agent.stream("hello"))
+
+    assert [event.type for event in events][-7:] == [
+        "turn_end",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "turn_end",
+        "agent_error",
+        "agent_end",
+    ]
+    assert sum(event.type == "turn_start" for event in events) == 2
+    assert sum(event.type == "turn_end" for event in events) == 2
+    assert sum(event.type == "agent_end" for event in events) == 1
+    failures = [
+        message
+        for message in messages
+        if message.role == "assistant" and message.stop_reason == "error"
+    ]
+    assert len(failures) == 1
+    assert agent.last_error is not None
+    assert agent.last_error.stage in {"steering_provider", "follow_up_provider", "prepare_next_turn"}

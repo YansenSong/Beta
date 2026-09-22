@@ -415,9 +415,15 @@ class ToolRuntime:
         tasks: dict[int, asyncio.Task[_Finalized]] = {}
 
         if self.coordinator is not None:
-            for index, entry in enumerate(entries):
-                if isinstance(entry, _Prepared):
-                    entry.durable_handle = await self.coordinator.prepare_operation(entry, index)
+            try:
+                for index, entry in enumerate(entries):
+                    if isinstance(entry, _Prepared):
+                        entry.durable_handle = await self.coordinator.prepare_operation(entry, index)
+                        cancellation.throw_if_cancelled()
+            except asyncio.CancelledError:
+                cancellation.cancel()
+                finalized = await self._abort_from_entries(calls, entries, 0, emit)
+                return finalized, True
 
         async def run(index: int, entry: _Prepared) -> _Finalized:
             item = await self._execute_prepared(context, assistant_message, entry, emit, cancellation)
@@ -480,10 +486,27 @@ class ToolRuntime:
             # 因此只有尚未 prepared 的 entry 需要补发 start。
             if entry is None:
                 await self._emit_start(calls[index], emit)
-            item = _aborted(calls[index])
+            item = await self._aborted_entry(entry, calls[index])
             entries[index] = item
             await self._emit_end(item, emit)
-        return [entry if isinstance(entry, _Finalized) else _aborted(calls[index]) for index, entry in enumerate(entries)]
+        return [entry for entry in entries if isinstance(entry, _Finalized)]
+
+    async def _aborted_entry(
+        self,
+        entry: _Prepared | None,
+        call: ToolCall,
+    ) -> _Finalized:
+        """Close a started preflight entry without executing its effect."""
+
+        item = _aborted(call)
+        if self.coordinator is not None and isinstance(entry, _Prepared) and entry.durable_handle is not None:
+            item.durable_handle = entry.durable_handle
+            item.durable_metadata = await self.coordinator.settle_operation(
+                entry.durable_handle,
+                item.result,
+                True,
+            )
+        return item
 
     async def _prepare(
         self,

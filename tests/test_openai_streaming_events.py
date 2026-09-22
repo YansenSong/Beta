@@ -95,3 +95,59 @@ async def test_openai_compatible_adapter_emits_fine_grained_events(monkeypatch):
     assert events[2].delta == "hi"
     assert events[-2].tool_call is not None
     assert events[-1].partial.tool_calls[0].arguments == {}
+
+
+@pytest.mark.asyncio
+async def test_openai_toolcall_partials_are_monotonic(monkeypatch):
+    class MultiResponse(_Response):
+        async def aiter_lines(self):
+            chunks = [
+                {
+                    "choices": [{"delta": {"tool_calls": [
+                        {"index": 0, "id": "a", "function": {"name": "first", "arguments": '{"value":'}}
+                    ]}, "finish_reason": None}],
+                },
+                {
+                    "choices": [{"delta": {"tool_calls": [
+                        {"index": 0, "function": {"arguments": "1}"}}
+                    ]}, "finish_reason": None}],
+                },
+                {
+                    "choices": [{"delta": {"tool_calls": [
+                        {"index": 1, "id": "b", "function": {"name": "second", "arguments": '{"value":2}'}}
+                    ]}, "finish_reason": "tool_calls"}],
+                },
+            ]
+            for chunk in chunks:
+                yield "data: " + json.dumps(chunk)
+            yield "data: [DONE]"
+
+    class MultiClient(_Client):
+        async def send(self, request, *, stream):
+            return MultiResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", MultiClient)
+    adapter = OpenAICompatibleAdapter(model="test", api_key="secret")
+    events = [
+        event
+        async for event in adapter.stream(
+            system_prompt="",
+            messages=[ProviderMessage(role="user")],
+            tools=[],
+        )
+    ]
+
+    tool_events = [event for event in events if event.type.startswith("toolcall_")]
+    snapshots = [
+        (event.type, [call.id for call in event.partial.tool_calls], [call.arguments for call in event.partial.tool_calls])
+        for event in tool_events
+    ]
+    assert snapshots == [
+        ("toolcall_start", ["a"], [{}]),
+        ("toolcall_delta", ["a"], [{}]),
+        ("toolcall_delta", ["a"], [{"value": 1}]),
+        ("toolcall_end", ["a"], [{"value": 1}]),
+        ("toolcall_start", ["a", "b"], [{"value": 1}, {}]),
+        ("toolcall_delta", ["a", "b"], [{"value": 1}, {"value": 2}]),
+        ("toolcall_end", ["a", "b"], [{"value": 1}, {"value": 2}]),
+    ]

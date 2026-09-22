@@ -66,6 +66,7 @@ class OpenAICompatibleAdapter:
         thinking_started = False
         tool_parts: dict[int, dict[str, Any]] = {}
         tool_started: set[int] = set()
+        tool_ended: set[int] = set()
         finish_reason = "stop"
         try:
             options = request_options or ProviderRequestOptions()
@@ -179,10 +180,41 @@ class OpenAICompatibleAdapter:
                             )
                         for item in delta.get("tool_calls") or []:
                             index = int(item.get("index", 0))
+                            for completed_index in sorted(
+                                current for current in tool_parts if current < index and current not in tool_ended
+                            ):
+                                raw_completed = tool_parts[completed_index]["arguments"]
+                                try:
+                                    parsed_completed = json.loads(raw_completed) if raw_completed else {}
+                                except json.JSONDecodeError:
+                                    continue
+                                if not isinstance(parsed_completed, dict):
+                                    continue
+                                completed = self._tool_calls({completed_index: tool_parts[completed_index]})
+                                if completed:
+                                    completed_part = tool_parts[completed_index]
+                                    yield ModelEvent(
+                                        type="toolcall_end",
+                                        partial=AgentMessage.assistant(
+                                            text,
+                                            thinking=thinking,
+                                            tool_calls=self._partial_tool_calls(tool_parts),
+                                        ),
+                                        content_index=completed_index,
+                                        tool_call_id=completed_part.get("_event_id", completed[0].id),
+                                        tool_name=completed_part.get("_event_name") or completed[0].name or None,
+                                        tool_call=completed[0],
+                                        completed_tool_call=completed[0],
+                                    )
+                                tool_ended.add(completed_index)
                             acc = tool_parts.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                            function = item.get("function") or {}
+                            if "_event_id" not in acc:
+                                acc["_event_id"] = item.get("id") or f"call_{index}"
+                            if "_event_name" not in acc:
+                                acc["_event_name"] = function.get("name") or ""
                             if item.get("id"):
                                 acc["id"] = item["id"]
-                            function = item.get("function") or {}
                             if function.get("name"):
                                 acc["name"] += function["name"]
                             if function.get("arguments"):
@@ -191,10 +223,14 @@ class OpenAICompatibleAdapter:
                                 tool_started.add(index)
                                 yield ModelEvent(
                                     type="toolcall_start",
-                                    partial=AgentMessage.assistant(text, thinking=thinking),
+                                    partial=AgentMessage.assistant(
+                                        text,
+                                        thinking=thinking,
+                                        tool_calls=self._partial_tool_calls(tool_parts, placeholder_index=index),
+                                    ),
                                     content_index=index,
-                                    tool_call_id=acc["id"] or f"call_{index}",
-                                    tool_name=acc["name"] or None,
+                                    tool_call_id=acc["_event_id"],
+                                    tool_name=acc["_event_name"] or None,
                                 )
                             tool_delta = function.get("arguments") or function.get("name")
                             if tool_delta:
@@ -203,11 +239,11 @@ class OpenAICompatibleAdapter:
                                     partial=AgentMessage.assistant(
                                         text,
                                         thinking=thinking,
-                                        tool_calls=self._tool_calls(tool_parts),
+                                        tool_calls=self._partial_tool_calls(tool_parts),
                                     ),
                                     content_index=index,
-                                    tool_call_id=acc["id"] or f"call_{index}",
-                                    tool_name=acc["name"] or None,
+                                    tool_call_id=acc["_event_id"],
+                                    tool_name=acc["_event_name"] or None,
                                     delta=str(tool_delta),
                                 )
                         if choice.get("finish_reason"):
@@ -215,7 +251,7 @@ class OpenAICompatibleAdapter:
                         partial = AgentMessage.assistant(
                             text,
                             thinking=thinking,
-                            tool_calls=self._tool_calls(tool_parts),
+                            tool_calls=self._partial_tool_calls(tool_parts),
                             stop_reason=self._map_finish_reason(finish_reason),
                         )
                 finally:
@@ -232,13 +268,19 @@ class OpenAICompatibleAdapter:
             if thinking_started:
                 yield ModelEvent(type="thinking_end", partial=partial, content_index=0)
             for index in sorted(tool_started):
+                if index in tool_ended:
+                    continue
                 calls = self._tool_calls({index: tool_parts[index]})
                 yield ModelEvent(
                     type="toolcall_end",
                     partial=partial,
                     content_index=index,
-                    tool_call_id=calls[0].id if calls else tool_parts[index].get("id") or f"call_{index}",
-                    tool_name=calls[0].name if calls else tool_parts[index].get("name") or None,
+                    tool_call_id=tool_parts[index].get("_event_id") or (
+                        calls[0].id if calls else tool_parts[index].get("id") or f"call_{index}"
+                    ),
+                    tool_name=tool_parts[index].get("_event_name") or (
+                        calls[0].name if calls else tool_parts[index].get("name") or None
+                    ),
                     tool_call=calls[0] if calls else None,
                     completed_tool_call=calls[0] if calls else None,
                 )
@@ -347,6 +389,33 @@ class OpenAICompatibleAdapter:
             except json.JSONDecodeError:
                 arguments = {"__raw__": raw}
             calls.append(ToolCall(id=part["id"] or f"call_{index}", name=part["name"], arguments=arguments))
+        return calls
+
+    def _partial_tool_calls(
+        self,
+        parts: dict[int, dict[str, Any]],
+        *,
+        placeholder_index: int | None = None,
+    ) -> list[ToolCall]:
+        """Build a monotonic snapshot without inventing parsed arguments."""
+
+        calls: list[ToolCall] = []
+        for index in sorted(parts):
+            part = parts[index]
+            raw = "" if index == placeholder_index else part["arguments"]
+            try:
+                arguments = json.loads(raw) if raw else {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+            except json.JSONDecodeError:
+                arguments = {}
+            calls.append(
+                ToolCall(
+                    id=part.get("_event_id") or part["id"] or f"call_{index}",
+                    name=part.get("_event_name", part["name"]),
+                    arguments=arguments,
+                )
+            )
         return calls
 
     def _map_finish_reason(self, reason: str) -> str:

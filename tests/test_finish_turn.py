@@ -6,6 +6,28 @@ from beta_agent import Agent, AgentConfig, AgentMessage, ScriptedModelAdapter, T
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config_factory",
+    [
+        lambda: AgentConfig(),
+        lambda: AgentConfig(finish_turn=lambda turn: None),
+        lambda: AgentConfig(should_stop_after_turn=lambda turn: False),
+    ],
+)
+async def test_natural_finish_decision_is_published_as_none(config_factory):
+    agent = Agent(
+        model=ScriptedModelAdapter([AgentMessage.assistant("done")]),
+        config=config_factory(),
+    )
+
+    events = [event async for event in agent.stream("hello")]
+
+    finish_event = next(event for event in events if event.type == "finish_turn")
+    assert finish_event.turn_decision is None
+    assert len(agent.model.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_finish_continue_makes_exactly_one_context_only_request():
     seen: list[int] = []
 

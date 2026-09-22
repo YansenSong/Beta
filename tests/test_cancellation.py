@@ -11,6 +11,7 @@ from beta_agent import (
     AgentConfig,
     AgentMessage,
     ModelEvent,
+    ScriptedModelAdapter,
     Tool,
     ToolCall,
     ToolResult,
@@ -290,3 +291,70 @@ async def test_coding_runtime_abort_propagates_through_extension_host(tmp_path: 
     assert events[-1].status == "aborted"
     assert not runtime.is_running
     runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_abort_during_durable_coordinator_preparation_balances_tool_lifecycle():
+    entered = asyncio.Event()
+    never = asyncio.Event()
+
+    class BlockingCoordinator:
+        def __init__(self):
+            self.settled = []
+
+        def begin_batch(self):
+            pass
+
+        async def prepare_operation(self, prepared, source_index):
+            if source_index == 0:
+                return "handle-a"
+            entered.set()
+            await never.wait()
+
+        def execution_context_kwargs(self, handle):
+            return {}
+
+        async def settle_operation(self, handle, result, is_error):
+            self.settled.append(handle)
+            return {}
+
+        async def acknowledge_published(self, operation_id):
+            pass
+
+    async def execute(args, ctx):
+        return ToolResult("unexpected")
+
+    calls = [ToolCall(name, name, {}) for name in ("a", "b")]
+    model = ScriptedModelAdapter([
+        AgentMessage.assistant(tool_calls=calls, stop_reason="tool_calls"),
+    ])
+    coordinator = BlockingCoordinator()
+    agent = Agent(
+        model=model,
+        tools=[Tool(name, name, NoArgs, execute) for name in ("a", "b")],
+        config=AgentConfig(tool_coordinator=coordinator),
+    )
+    stream = agent.stream("go")
+    await entered.wait()
+    agent.abort()
+    events, messages = await _events_and_result(stream)
+
+    for call in calls:
+        starts = [
+            event for event in events
+            if event.type == "tool_execution_start" and event.tool_call_id == call.id
+        ]
+        ends = [
+            event for event in events
+            if event.type == "tool_execution_end" and event.tool_call_id == call.id
+        ]
+        assert len(starts) == len(ends) == 1
+        assert ends[0].is_error is True
+        assert ends[0].result.content.text == "Operation aborted"
+
+    results = [message for message in messages if message.role == "tool"]
+    assert [message.tool_call_id for message in results] == ["a", "b"]
+    assert all(message.metadata["aborted"] is True for message in results)
+    assert coordinator.settled == ["handle-a"]
+    assert agent.state.pending_tool_calls == frozenset()
+    assert events[-1].status == "aborted"

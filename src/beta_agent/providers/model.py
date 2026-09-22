@@ -9,7 +9,7 @@ from typing import Protocol
 from ..runtime.cancellation import CancellationToken
 from .messages import ProviderMessage
 from .policy import ProviderRequestOptions
-from ..types import AgentMessage, Message, ModelEvent
+from ..types import AgentMessage, Message, ModelEvent, ToolCall
 
 
 class ModelAdapter(Protocol):
@@ -98,31 +98,40 @@ class ScriptedModelAdapter:
         if cancellation is not None:
             cancellation.throw_if_cancelled()
         if final.tool_calls:
+            accumulated_calls: list[ToolCall] = []
             for content_index, call in enumerate(final.tool_calls):
+                placeholder = ToolCall(call.id, call.name, {})
                 yield ModelEvent(
                     type="toolcall_start",
-                    partial=final.copy(tool_calls=[]),
+                    partial=final.copy(tool_calls=[*accumulated_calls, placeholder]),
                     tool_call_id=call.id,
                     tool_name=call.name,
                     content_index=content_index,
                 )
+                raw_arguments = json.dumps(call.arguments, sort_keys=True)
                 yield ModelEvent(
                     type="toolcall_delta",
-                    partial=final.copy(),
+                    partial=final.copy(
+                        tool_calls=[
+                            *accumulated_calls,
+                            ToolCall(call.id, call.name, dict(call.arguments)),
+                        ]
+                    ),
                     tool_call_id=call.id,
                     tool_name=call.name,
                     content_index=content_index,
-                    delta=json.dumps(call.arguments, sort_keys=True),
+                    delta=raw_arguments,
                 )
                 yield ModelEvent(
                     type="toolcall_end",
-                    partial=final.copy(),
+                    partial=final.copy(tool_calls=[*accumulated_calls, call]),
                     tool_call_id=call.id,
                     tool_name=call.name,
                     content_index=content_index,
                     tool_call=call,
                     completed_tool_call=call,
                 )
+                accumulated_calls.append(call)
 
         if cancellation is not None:
             cancellation.throw_if_cancelled()

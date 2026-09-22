@@ -246,7 +246,7 @@ class _AgentLoopMixin:
 
                 # should_stop_after_turn is the historical spelling of an end
                 # decision.  AgentConfig rejects configuring both hooks.
-                decision = TurnDecision("continue")
+                decision: TurnDecision | None = None
                 finish_requested_continue = False
                 if self.config.should_stop_after_turn:
                     cancellation.throw_if_cancelled()
@@ -282,7 +282,7 @@ class _AgentLoopMixin:
                         )
                     if decision_value is not None:
                         decision = decision_value
-                    if decision.action not in {"continue", "end"}:
+                    if decision is not None and decision.action not in {"continue", "end"}:
                         raise _StageFailure(
                             _error_info("finish_turn", ValueError(f"Unknown turn action: {decision.action!r}"))
                         )
@@ -302,7 +302,7 @@ class _AgentLoopMixin:
                 await self._emit_turn_end(state, emit, assistant, tool_results)
                 previous_turn = turn_result
 
-                if decision.action == "end":
+                if decision is not None and decision.action == "end":
                     return await self._emit_agent_end(state, emit, status="completed")
 
                 # Current-turn steering is checked only after all tool results
@@ -335,6 +335,7 @@ class _AgentLoopMixin:
         # adapter retries cannot trigger it a second time.
         cancellation.throw_if_cancelled()
         await emit(AgentEvent(type="prepare_request"))
+        context_replaced = False
         if self.config.prepare_request:
             request_context = PrepareRequestContext(
                 context=self.context,
@@ -359,12 +360,16 @@ class _AgentLoopMixin:
             if request_update is not None:
                 if request_update.context is not None:
                     self.context = request_update.context
+                    context_replaced = True
                 if request_update.model is not None:
                     self.model = request_update.model
                 if request_update.request_options is not None:
                     self._provider_request_options = merge_provider_request_options(
                         self._provider_request_options, request_update.request_options
                     )
+
+        if context_replaced:
+            await self._reconcile_request_tools(state, emit, cancellation)
 
         # transform_context 只决定“本轮模型看到什么”，默认不替换 Runtime 保存的完整 history。
         runtime_messages: Sequence[AgentMessage] = list(self.context.messages)
@@ -407,7 +412,6 @@ class _AgentLoopMixin:
 
         partial: AgentMessage | None = None
         added_partial = False
-        message_end_emitted = False
         model_started = True
         state.current_assistant = None
         state.assistant_message_started = False
@@ -475,16 +479,7 @@ class _AgentLoopMixin:
                         )
                     elif partial.stop_reason == "aborted":
                         partial = _aborted_assistant(partial, stage="model")
-                    ensure_started(partial)
-                    self.context.messages[-1] = partial
-                    if not state.assistant_message_started:
-                        await emit(AgentEvent(type="message_start", message=partial.copy()))
-                        state.assistant_message_started = True
-                    if not message_end_emitted:
-                        await emit(AgentEvent(type="message_end", message=partial))
-                        message_end_emitted = True
-                        state.assistant_message_end_emitted = True
-                    state.current_assistant = partial
+                    await self._finalize_assistant_message(state, emit, partial)
                     error_info = (
                         _error_info(
                             "model",
@@ -504,27 +499,13 @@ class _AgentLoopMixin:
                 type(error).__name__,
                 stage="model",
             )
-            ensure_started(final)
-            self.context.messages[-1] = final
-            if not state.assistant_message_started:
-                await emit(AgentEvent(type="message_start", message=final.copy()))
-                state.assistant_message_started = True
-            await emit(AgentEvent(type="message_end", message=final))
-            state.assistant_message_end_emitted = True
-            state.current_assistant = final
+            await self._finalize_assistant_message(state, emit, final)
             return _AssistantResult(final, _error_info("model", error))
         except asyncio.CancelledError:
             cancellation.cancel()
-            if model_started and not message_end_emitted:
+            if model_started and not state.assistant_message_end_emitted:
                 aborted = _aborted_assistant(partial, stage="model")
-                ensure_started(aborted)
-                self.context.messages[-1] = aborted
-                if not state.assistant_message_started:
-                    await emit(AgentEvent(type="message_start", message=aborted.copy()))
-                    state.assistant_message_started = True
-                await emit(AgentEvent(type="message_end", message=aborted))
-                state.assistant_message_end_emitted = True
-                state.current_assistant = aborted
+                await self._finalize_assistant_message(state, emit, aborted)
             raise
         except _StageFailure:
             raise
@@ -537,16 +518,25 @@ class _AgentLoopMixin:
                 type(exc).__name__,
                 stage="model",
             )
-            ensure_started(final)
-            self.context.messages[-1] = final
-            if not state.assistant_message_started:
-                await emit(AgentEvent(type="message_start", message=final.copy()))
-                state.assistant_message_started = True
-            if not message_end_emitted:
-                await emit(AgentEvent(type="message_end", message=final))
-                state.assistant_message_end_emitted = True
-            state.current_assistant = final
+            await self._finalize_assistant_message(state, emit, final)
             return _AssistantResult(final, _error_info("model", exc))
+
+    async def _reconcile_request_tools(self, state: _RunState, emit, cancellation: CancellationToken) -> None:
+        """Persist executable-tool changes before projecting a provider request."""
+
+        cancellation.throw_if_cancelled()
+        deltas = declare_tool_changes(self.context, [])
+        for message in deltas:
+            insertion = next(
+                (index for index, existing in enumerate(self.context.messages) if existing.role != "system"),
+                len(self.context.messages),
+            )
+            self.context.messages.insert(insertion, message)
+            if not any(existing is message for existing in state.new_messages):
+                state.new_messages.append(message)
+            await emit(AgentEvent(type="message_start", message=message))
+            await emit(AgentEvent(type="message_end", message=message))
+        cancellation.throw_if_cancelled()
 
     def _model_stream(
         self,
@@ -651,6 +641,8 @@ class _AgentLoopMixin:
         if not state.agent_started:
             state.agent_started = True
             await emit(AgentEvent(type="agent_start"))
+        if not self._has_closed_failure_assistant(state):
+            await self._begin_failure_turn(state, emit)
         assistant = await self._ensure_failure_assistant(state, emit, aborted=True)
         await self._emit_turn_end(state, emit, assistant, [])
         return await self._emit_agent_end(state, emit, status="aborted")
@@ -661,12 +653,61 @@ class _AgentLoopMixin:
         if not state.agent_started:
             state.agent_started = True
             await emit(AgentEvent(type="agent_start"))
+        if not self._has_closed_failure_assistant(state):
+            await self._begin_failure_turn(state, emit)
         assistant = await self._ensure_failure_assistant(state, emit, info=info)
         await self._emit_turn_end(state, emit, assistant, [])
         if not state.agent_error_emitted:
             state.agent_error_emitted = True
             await emit(AgentEvent(type="agent_error", error=info.message, error_info=info))
         return await self._emit_agent_end(state, emit, status="error", error_info=info)
+
+    @staticmethod
+    def _has_closed_failure_assistant(state: _RunState) -> bool:
+        return (
+            not state.turn_started
+            and state.assistant_message_end_emitted
+            and state.current_assistant is not None
+            and state.current_assistant.stop_reason in {"error", "aborted"}
+        )
+
+    async def _begin_failure_turn(self, state: _RunState, emit) -> None:
+        if state.turn_started:
+            return
+        state.turn_started = True
+        state.turn_end_emitted = False
+        state.current_assistant = None
+        state.assistant_message_started = False
+        state.assistant_message_end_emitted = False
+        await emit(AgentEvent(type="turn_start"))
+
+    async def _finalize_assistant_message(self, state: _RunState, emit, message: AgentMessage) -> AgentMessage:
+        """Replace/append one canonical assistant and close its message lifecycle."""
+
+        current = state.current_assistant
+        replaced = False
+        if current is not None:
+            for index, existing in enumerate(self.context.messages):
+                if existing is current:
+                    self.context.messages[index] = message
+                    replaced = True
+                    break
+        if not replaced and state.assistant_message_started:
+            for index in range(len(self.context.messages) - 1, -1, -1):
+                if self.context.messages[index].role == "assistant":
+                    self.context.messages[index] = message
+                    replaced = True
+                    break
+        if not replaced:
+            self.context.messages.append(message)
+        state.current_assistant = message
+        if not state.assistant_message_started:
+            await emit(AgentEvent(type="message_start", message=message.copy()))
+            state.assistant_message_started = True
+        if not state.assistant_message_end_emitted:
+            await emit(AgentEvent(type="message_end", message=message))
+            state.assistant_message_end_emitted = True
+        return message
 
     async def _ensure_failure_assistant(
         self,
@@ -705,28 +746,14 @@ class _AgentLoopMixin:
                 stage=info.stage,
             )
 
-        replaced = False
-        if current is not None:
-            for index, message in enumerate(self.context.messages):
-                if message is current:
-                    self.context.messages[index] = normalized
-                    replaced = True
-                    break
-        if not replaced:
-            self.context.messages.append(normalized)
-        state.current_assistant = normalized
+        state.current_assistant = current
+        await self._finalize_assistant_message(state, emit, normalized)
         if not any(message is normalized for message in state.new_messages):
             # If this is a replacement of an existing partial, remove that
             # exact object from the per-run result before adding the final one.
             state.new_messages[:] = [message for message in state.new_messages if message is not current]
             state.new_messages.append(normalized)
 
-        if not state.assistant_message_started:
-            await emit(AgentEvent(type="message_start", message=normalized.copy()))
-            state.assistant_message_started = True
-        if not state.assistant_message_end_emitted:
-            await emit(AgentEvent(type="message_end", message=normalized))
-            state.assistant_message_end_emitted = True
         return normalized
 
 
