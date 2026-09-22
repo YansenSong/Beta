@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from pydantic import BaseModel
 
 from beta_agent import (
@@ -20,6 +21,9 @@ from beta_agent import (
     ToolRuntime,
 )
 from beta_agent.harness.tool import AfterToolCallPatch
+from beta_agent.harness.durable import MemoryStorage
+from beta_agent.harness.durable.runtime import DurableToolCoordinator, recover_durable_runtime
+from beta_agent.runtime.cancellation import CancellationToken
 
 
 class EmptyArgs(BaseModel):
@@ -110,3 +114,93 @@ async def test_rich_tool_result_usage_patch_and_session_roundtrip(tmp_path):
 async def test_text_tool_result_is_normalized_to_content_blocks():
     result = ToolResult("plain text")
     assert result.content.text == "plain text"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_after_hook_settles_completed_tool_effect(tmp_path):
+    storage = MemoryStorage()
+    await storage.open()
+    effects = 0
+
+    async def execute(args, ctx):
+        nonlocal effects
+        effects += 1
+        return ToolResult("effect result", details={"effect": effects})
+
+    async def after(value, cancellation=None):
+        cancellation.cancel()
+        raise asyncio.CancelledError()
+
+    tool = Tool("work", "work", EmptyArgs, execute, replay_policy="safe")
+    coordinator = DurableToolCoordinator(storage, task_id="task", run_id="run")
+    runtime = ToolRuntime(after_tool_call=after, coordinator=coordinator)
+    batch = await runtime.execute_batch(
+        context=AgentContext(system_prompt="", tools=[tool]),
+        calls=[ToolCall("call", "work", {})],
+        emit=_noop_emit,
+        cancellation=CancellationToken(),
+    )
+
+    message = batch.messages[0]
+    assert effects == 1
+    assert batch.aborted is True
+    assert message.text == "effect result"
+    assert message.metadata["aborted"] is False
+    assert message.metadata["details"]["stage"] == "after_tool_call"
+    assert message.metadata["details"]["after_hook_cancelled"] is True
+
+    pending = await storage.scan_effect_pending_operations()
+    assert pending == []
+    operation = await storage.get_operation(message.metadata["durable_operation_id"])
+    assert operation is not None
+    assert operation.status == "outcome_ready"
+
+    session = SessionTree()
+    report = await recover_durable_runtime(storage, session, tmp_path / "session.jsonl", [tool])
+    assert report.replayed_operations == []
+    assert effects == 1
+    assert len(session.entries) == 1
+    assert (await storage.get_operation(operation.id)).status == "completed"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_cancellation_does_not_rewrite_completed_effect_as_aborted():
+    storage = MemoryStorage()
+    await storage.open()
+    entered_after = asyncio.Event()
+    effects = 0
+
+    async def execute(args, ctx):
+        nonlocal effects
+        effects += 1
+        return ToolResult("effect result")
+
+    async def after(value, cancellation=None):
+        entered_after.set()
+        await asyncio.Event().wait()
+
+    tool = Tool("work", "work", EmptyArgs, execute)
+    coordinator = DurableToolCoordinator(storage, task_id="task", run_id="run")
+    runtime = ToolRuntime(after_tool_call=after, coordinator=coordinator)
+    task = asyncio.create_task(
+        runtime.execute_batch(
+            context=AgentContext(system_prompt="", tools=[tool]),
+            calls=[ToolCall("call", "work", {})],
+            emit=_noop_emit,
+        )
+    )
+    await entered_after.wait()
+    task.cancel()
+    batch = await task
+
+    message = batch.messages[0]
+    assert effects == 1
+    assert batch.aborted is True
+    assert message.metadata["aborted"] is False
+    assert message.metadata["details"]["after_hook_cancelled"] is True
+    operation = await storage.get_operation(message.metadata["durable_operation_id"])
+    assert operation is not None
+    assert operation.status == "outcome_ready"
+    assert await storage.scan_effect_pending_operations() == []
+    await storage.close()

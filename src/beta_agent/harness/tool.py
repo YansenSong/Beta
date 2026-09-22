@@ -337,15 +337,19 @@ class ToolRuntime:
                 finalized, aborted = await self._execute_parallel(
                     context, assistant_message, calls, emit, token
                 )
-            messages = await self._commit(finalized, emit)
+            messages = await self._commit(finalized, emit, token)
             terminate = bool(finalized) and all(item.result.terminate for item in finalized)
-            return ToolBatchResult(messages=messages, terminate=terminate, aborted=aborted)
+            return ToolBatchResult(
+                messages=messages,
+                terminate=terminate,
+                aborted=aborted or token.cancelled,
+            )
         except asyncio.CancelledError:
             # Root Agent cancellation 可能在 preflight 或 child task 运行时到达。
             # 在把控制权交还给 Agent 前，先把整批调用转换成协议完整的 result set。
             token.cancel()
             finalized = [_aborted(call) for call in calls]
-            messages = await self._commit(finalized, emit)
+            messages = await self._commit(finalized, emit, token)
             return ToolBatchResult(messages=messages, aborted=True)
 
     async def _execute_sequential(
@@ -363,6 +367,7 @@ class ToolRuntime:
 
             started = False
             ended = False
+            item: _Finalized | None = None
             try:
                 await self._emit_start(call, emit)
                 started = True
@@ -377,6 +382,12 @@ class ToolRuntime:
                 finalized.append(item)
             except asyncio.CancelledError:
                 cancellation.cancel()
+                if item is not None:
+                    # The effect may already be durable even if publishing its
+                    # execution-end event was interrupted.  Preserve it and
+                    # only abort calls that have not produced a result.
+                    finalized.append(item)
+                    return await self._abort_remaining(calls, index + 1, finalized, emit), True
                 if started and not ended:
                     item = _aborted(call)
                     await self._emit_end(item, emit)
@@ -429,7 +440,13 @@ class ToolRuntime:
             item = await self._execute_prepared(context, assistant_message, entry, emit, cancellation)
             # execution_end 按完成顺序产生；下面最终 message commit
             # 仍会按 source order 消费 gather 后的值。
-            await self._emit_end(item, emit)
+            try:
+                await self._emit_end(item, emit)
+            except asyncio.CancelledError:
+                # _execute_prepared settles a completed durable effect before
+                # reaching this publication boundary.  Do not let batch
+                # cancellation turn that finalized result into ``aborted``.
+                cancellation.cancel()
             return item
 
         for index, entry in enumerate(entries):
@@ -607,25 +624,40 @@ class ToolRuntime:
             cancellation=cancellation,
             **(self.coordinator.execution_context_kwargs(prepared.durable_handle) if self.coordinator and prepared.durable_handle else {}),
         )
+        effect_completed = False
+        after_hook_cancelled = False
         try:
-            result = await prepared.tool.execute(prepared.args, execution_context)
-            is_error = False
-        except asyncio.CancelledError:
-            # batch boundary 会把这里转换成 aborted Tool Result；
-            # 直接调用 Tool.execute 的调用方仍会收到真实的 task cancellation。
-            raise
-        except Exception as exc:  # Tool failure 会被转换为 model-visible result。
-            result = ToolResult(
-                content=f"Tool execution failed: {exc}",
-                details={"stage": "tool_execute", "exception_type": type(exc).__name__},
-            )
-            is_error = True
+            try:
+                result = await prepared.tool.execute(prepared.args, execution_context)
+                is_error = False
+            except asyncio.CancelledError:
+                # batch boundary 会把这里转换成 aborted Tool Result；
+                # 直接调用 Tool.execute 的调用方仍会收到真实的 task cancellation。
+                raise
+            except Exception as exc:  # Tool failure 会被转换为 model-visible result。
+                result = ToolResult(
+                    content=f"Tool execution failed: {exc}",
+                    details={"stage": "tool_execute", "exception_type": type(exc).__name__},
+                )
+                is_error = True
+            effect_completed = True
         finally:
-            await execution_context.close_updates()
+            try:
+                await execution_context.close_updates()
+            except asyncio.CancelledError:
+                if not effect_completed:
+                    raise
+                # The effect returned before cancellation reached the update
+                # gate.  Skip further hooks, but settle the real effect below.
+                cancellation.cancel()
+                after_hook_cancelled = True
 
         # after hook 位于 Tool 真正执行之后、tool_execution_end 事件之前，
         # 可以统一补充 metadata、改写展示内容或设置 terminate，而不用侵入具体 Tool。
-        if self.after_tool_call:
+        if after_hook_cancelled:
+            result = _after_hook_cancelled_result(result)
+            is_error = True
+        elif self.after_tool_call:
             patch = None
             try:
                 patch = await call_with_optional_cancellation(
@@ -641,7 +673,11 @@ class ToolRuntime:
                     cancellation=cancellation,
                 )
             except asyncio.CancelledError:
-                raise
+                # The external effect already returned.  Preserve that fact as
+                # a model-visible, non-aborted result and settle it below.
+                cancellation.cancel()
+                result = _after_hook_cancelled_result(result)
+                is_error = True
             except Exception as exc:
                 # The external effect has already returned.  Normalize the hook
                 # failure, then continue through durable settlement so recovery
@@ -672,7 +708,9 @@ class ToolRuntime:
 
         metadata = None
         if self.coordinator is not None and prepared.durable_handle is not None:
-            metadata = await self.coordinator.settle_operation(prepared.durable_handle, result, is_error)
+            metadata = await _await_uncancelled(
+                self.coordinator.settle_operation(prepared.durable_handle, result, is_error)
+            )
         return _Finalized(prepared.call, result, is_error, durable_handle=prepared.durable_handle, durable_metadata=metadata)
 
     async def _emit_start(self, call: ToolCall, emit: Emit) -> None:
@@ -699,7 +737,12 @@ class ToolRuntime:
             )
         )
 
-    async def _commit(self, finalized: list[_Finalized], emit: Emit) -> list[AgentMessage]:
+    async def _commit(
+        self,
+        finalized: list[_Finalized],
+        emit: Emit,
+        cancellation: CancellationToken | None = None,
+    ) -> list[AgentMessage]:
         # 只有最终 Tool Result 会进入对话历史；progress/update 事件不会污染模型上下文。
         messages: list[AgentMessage] = []
         for item in finalized:
@@ -715,10 +758,25 @@ class ToolRuntime:
                 usage=item.result.usage,
                 **(item.durable_metadata or {}),
             )
-            await emit(AgentEvent(type="message_start", message=message))
-            await emit(AgentEvent(type="message_end", message=message))
+            try:
+                await emit(AgentEvent(type="message_start", message=message))
+                await emit(AgentEvent(type="message_end", message=message))
+            except asyncio.CancelledError:
+                # Publication cancellation cannot invalidate an already
+                # settled effect.  Keep the finalized message for the caller;
+                # the durable outbox remains available for recovery.
+                if cancellation is not None:
+                    cancellation.cancel()
             if self.coordinator is not None and item.durable_metadata:
-                await self.coordinator.acknowledge_published(item.durable_metadata["durable_operation_id"])
+                try:
+                    await _await_uncancelled(
+                        self.coordinator.acknowledge_published(
+                            item.durable_metadata["durable_operation_id"]
+                        )
+                    )
+                except asyncio.CancelledError:
+                    if cancellation is not None:
+                        cancellation.cancel()
             messages.append(message)
 
         return messages
@@ -734,3 +792,31 @@ def _aborted(call: ToolCall) -> _Finalized:
         True,
         aborted=True,
     )
+
+
+def _after_hook_cancelled_result(result: ToolResult) -> ToolResult:
+    return ToolResult(
+        content=result.content,
+        details={
+            "stage": "after_tool_call",
+            "exception_type": "CancelledError",
+            "tool_executed": True,
+            "after_hook_cancelled": True,
+            "original_result_details": result.details,
+        },
+        terminate=result.terminate,
+        added_tool_names=list(result.added_tool_names),
+        usage=result.usage,
+    )
+
+
+async def _await_uncancelled(awaitable):
+    """Finish one already-started durable settlement despite outer cancellation."""
+
+    task = asyncio.ensure_future(awaitable)
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                return task.result()

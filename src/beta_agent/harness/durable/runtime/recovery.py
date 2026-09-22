@@ -1,11 +1,19 @@
 from __future__ import annotations
+import asyncio
 from dataclasses import dataclass, field, replace
 from typing import Any, Sequence
 from ....runtime.cancellation import CancellationToken
 from ....runtime.cancellation import call_with_optional_cancellation
 from ....messages import utc_now_iso
 from ...session import SessionTree, agent_message_from_dict
-from ...tool import AfterToolCallContext, Tool, ToolExecutionContext, _PATCH_UNSET, adapt_tool_hook
+from ...tool import (
+    AfterToolCallContext,
+    Tool,
+    ToolExecutionContext,
+    _PATCH_UNSET,
+    _after_hook_cancelled_result,
+    adapt_tool_hook,
+)
 from ....types import AgentContext, AgentMessage, ToolCall, ToolResult
 from .tools import DurableToolCoordinator, OperationHandle
 from ..types import DurableStorage
@@ -73,6 +81,10 @@ async def recover_durable_runtime(storage: DurableStorage, session: SessionTree,
                         ),
                         cancellation=ctx.cancellation,
                     )
+                except asyncio.CancelledError:
+                    result = _after_hook_cancelled_result(result)
+                    is_error = True
+                    patch = None
                 except Exception as exc:
                     result = ToolResult(content=f"Tool executed, but after_tool_call hook failed: {exc}",
                         details={"stage": "after_tool_call", "exception_type": type(exc).__name__,
