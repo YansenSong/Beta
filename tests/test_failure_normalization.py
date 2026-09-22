@@ -247,3 +247,21 @@ async def test_steering_and_follow_up_provider_failures_are_not_silently_dropped
     events, _ = await _collect(agent.stream("hello"))
     assert events[-1].status == "error"
     assert agent.last_error is not None and agent.last_error.stage == "follow_up_provider"
+
+
+@pytest.mark.asyncio
+async def test_stream_subscriber_failure_closes_partial_assistant_once():
+    async def listener(event, cancellation=None):
+        if event.type == "message_update":
+            raise RuntimeError("subscriber boom")
+
+    agent = Agent(model=ScriptedModelAdapter([AgentMessage.assistant("done")]))
+    agent.subscribe(listener)
+    events, messages = await _collect(agent.stream("hello"))
+
+    assistants = [message for message in messages if message.role == "assistant"]
+    assert len(assistants) == 1
+    assert assistants[0].stop_reason == "error"
+    assert agent.last_error is not None and agent.last_error.stage == "event_listener"
+    assert sum(event.type == "agent_end" for event in events) == 1
+    assert sum(event.type == "turn_end" for event in events) == 1

@@ -9,6 +9,8 @@ ErrorStage = Literal[
     "transform_context",
     "convert_to_llm",
     "prepare_next_turn",
+    "prepare_request",
+    "finish_turn",
     "should_stop_after_turn",
     "steering_provider",
     "follow_up_provider",

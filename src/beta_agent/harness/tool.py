@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Generic, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -15,14 +15,17 @@ from ..messages import normalize_content_blocks
 __all__ = [
     "AfterToolCall",
     "AfterToolCallPatch",
+    "AfterToolCallContext",
     "BeforeToolCall",
     "BeforeToolCallDecision",
+    "BeforeToolCallContext",
     "Emit",
     "Tool",
     "ToolCoordinator",
     "ToolExecutionContext",
     "ToolHandler",
     "ToolRuntime",
+    "adapt_tool_hook",
 ]
 
 ArgsT = TypeVar("ArgsT", bound=BaseModel)
@@ -30,6 +33,24 @@ Emit = Callable[[AgentEvent], Awaitable[None]]
 ToolHandler = Callable[[ArgsT, "ToolExecutionContext"], Awaitable[ToolResult | str] | ToolResult | str]
 BeforeToolCall = Callable[..., Awaitable["BeforeToolCallDecision | None"] | "BeforeToolCallDecision | None"]
 AfterToolCall = Callable[..., Awaitable["AfterToolCallPatch | None"] | "AfterToolCallPatch | None"]
+
+
+@dataclass(slots=True)
+class BeforeToolCallContext:
+    assistant_message: AgentMessage
+    tool_call: ToolCall
+    args: BaseModel
+    context: AgentContext
+
+
+@dataclass(slots=True)
+class AfterToolCallContext:
+    assistant_message: AgentMessage
+    tool_call: ToolCall
+    args: BaseModel
+    result: ToolResult
+    is_error: bool
+    context: AgentContext
 
 
 @dataclass(slots=True)
@@ -42,17 +63,77 @@ class BeforeToolCallDecision:
 @dataclass(slots=True)
 class AfterToolCallPatch:
     content: str | AgentContent | Sequence[AgentContent] | None = None
-    details: Any = None
+    # A sentinel distinguishes an omitted field from an explicit ``None`` so
+    # each patch field can replace exactly one result field without deep merge.
+    details: Any = field(default_factory=lambda: _PATCH_UNSET)
     replace_details: bool = False
     is_error: bool | None = None
     terminate: bool | None = None
     usage: dict[str, Any] | None = None
 
 
+_PATCH_UNSET = object()
+
+
+class _ToolHookAdapter:
+    """Call one hook shape exactly once after registration-time inspection."""
+
+    def __init__(self, hook: Callable[..., Any], *, kind: Literal["before", "after"]) -> None:
+        self.hook = hook
+        self.kind = kind
+        self.structured = _is_structured_tool_hook(hook, kind=kind)
+
+    async def __call__(self, value: BeforeToolCallContext | AfterToolCallContext, *, cancellation=None):
+        if self.structured:
+            return await call_with_optional_cancellation(self.hook, value, cancellation=cancellation)
+        if isinstance(value, BeforeToolCallContext):
+            args = (value.tool_call, value.args, value.context)
+        else:
+            args = (value.tool_call, value.args, value.result, value.is_error, value.context)
+        return await call_with_optional_cancellation(self.hook, *args, cancellation=cancellation)
+
+
+def _is_structured_tool_hook(hook: Callable[..., Any], *, kind: Literal["before", "after"]) -> bool:
+    """Detect legacy-vs-structured shape without invoking the callback."""
+
+    del kind
+    try:
+        signature = inspect.signature(hook)
+    except (TypeError, ValueError):
+        # Opaque callables cannot be safely probed by catching TypeError after
+        # invocation. Treat them as the historical positional shape once.
+        return False
+    positional = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    ]
+    if any(parameter.kind is inspect.Parameter.VAR_POSITIONAL for parameter in signature.parameters.values()):
+        return False
+    return len(positional) <= 1 or (
+        len(positional) == 2 and positional[1].name in {"cancellation", "cancel", "token"}
+    )
+
+
+def adapt_tool_hook(
+    hook: BeforeToolCall | AfterToolCall | _ToolHookAdapter | None,
+    *,
+    kind: Literal["before", "after"],
+) -> _ToolHookAdapter | None:
+    """Adapt a tool hook once, preserving real TypeError failures."""
+
+    if hook is None:
+        return None
+    if isinstance(hook, _ToolHookAdapter):
+        return hook
+    return _ToolHookAdapter(hook, kind=kind)
+
+
 @dataclass(slots=True, init=False)
 class ToolExecutionContext:
     tool_call_id: str
     tool_name: str
+    args: dict[str, Any]
     cancellation: CancellationToken
     _emit: Emit
     _accepting_updates: bool
@@ -72,6 +153,7 @@ class ToolExecutionContext:
         cancellation_or_emit: CancellationToken | Emit | None = None,
         emit: Emit | None = None,
         *,
+        args: dict[str, Any] | None = None,
         cancellation: CancellationToken | None = None,
         _emit: Emit | None = None,
         operation_id: str | None = None,
@@ -104,6 +186,7 @@ class ToolExecutionContext:
 
         self.tool_call_id = tool_call_id
         self.tool_name = tool_name
+        self.args = dict(args or {})
         self.cancellation = token
         self._emit = emit_value
         self._accepting_updates = True
@@ -137,7 +220,9 @@ class ToolExecutionContext:
                     type="tool_execution_update",
                     tool_call_id=self.tool_call_id,
                     tool_name=self.tool_name,
+                    args=dict(self.args),
                     result=partial_result,
+                    partial_result=partial_result,
                 )
             )
 
@@ -205,8 +290,11 @@ class ToolRuntime:
         execution_mode: Literal["parallel", "sequential"] = "parallel",
         coordinator: ToolCoordinator | None = None,
     ) -> None:
-        self.before_tool_call = before_tool_call
-        self.after_tool_call = after_tool_call
+        # Inspect and adapt once at runtime construction.  Never catch a
+        # TypeError from a hook and retry another signature: it may be the
+        # hook's actual failure.
+        self.before_tool_call = adapt_tool_hook(before_tool_call, kind="before")
+        self.after_tool_call = adapt_tool_hook(after_tool_call, kind="after")
         self.execution_mode = execution_mode
         self.coordinator = coordinator
 
@@ -214,11 +302,20 @@ class ToolRuntime:
         self,
         *,
         context: AgentContext,
-        calls: list[ToolCall],
         emit: Emit,
+        assistant_message: AgentMessage | None = None,
+        calls: Sequence[ToolCall] | None = None,
         cancellation: CancellationToken | None = None,
     ) -> ToolBatchResult:
         token = cancellation or CancellationToken()
+        if assistant_message is None:
+            if calls is None:
+                raise TypeError("execute_batch requires assistant_message or calls")
+            source_calls = list(calls)
+            assistant_message = AgentMessage.assistant(tool_calls=source_calls, stop_reason="tool_calls")
+        elif calls is not None and list(calls) != list(assistant_message.tool_calls):
+            raise ValueError("calls must match assistant_message.tool_calls")
+        calls = list(assistant_message.tool_calls)
         if not calls:
             return ToolBatchResult(messages=[])
 
@@ -233,9 +330,13 @@ class ToolRuntime:
         )
         try:
             if force_sequential:
-                finalized, aborted = await self._execute_sequential(context, calls, emit, token)
+                finalized, aborted = await self._execute_sequential(
+                    context, assistant_message, calls, emit, token
+                )
             else:
-                finalized, aborted = await self._execute_parallel(context, calls, emit, token)
+                finalized, aborted = await self._execute_parallel(
+                    context, assistant_message, calls, emit, token
+                )
             messages = await self._commit(finalized, emit)
             terminate = bool(finalized) and all(item.result.terminate for item in finalized)
             return ToolBatchResult(messages=messages, terminate=terminate, aborted=aborted)
@@ -250,6 +351,7 @@ class ToolRuntime:
     async def _execute_sequential(
         self,
         context: AgentContext,
+        assistant_message: AgentMessage,
         calls: list[ToolCall],
         emit: Emit,
         cancellation: CancellationToken,
@@ -264,11 +366,11 @@ class ToolRuntime:
             try:
                 await self._emit_start(call, emit)
                 started = True
-                prepared = await self._prepare(context, call, cancellation)
+                prepared = await self._prepare(context, assistant_message, call, cancellation)
                 if isinstance(prepared, _Prepared) and self.coordinator is not None:
                     prepared.durable_handle = await self.coordinator.prepare_operation(prepared, index)
                 item = prepared if isinstance(prepared, _Finalized) else await self._execute_prepared(
-                    context, prepared, emit, cancellation
+                    context, assistant_message, prepared, emit, cancellation
                 )
                 await self._emit_end(item, emit)
                 ended = True
@@ -285,6 +387,7 @@ class ToolRuntime:
     async def _execute_parallel(
         self,
         context: AgentContext,
+        assistant_message: AgentMessage,
         calls: list[ToolCall],
         emit: Emit,
         cancellation: CancellationToken,
@@ -298,7 +401,7 @@ class ToolRuntime:
                 return finalized, True
             try:
                 await self._emit_start(call, emit)
-                prepared = await self._prepare(context, call, cancellation)
+                prepared = await self._prepare(context, assistant_message, call, cancellation)
                 entries[index] = prepared
                 if isinstance(prepared, _Finalized):
                     await self._emit_end(prepared, emit)
@@ -317,7 +420,7 @@ class ToolRuntime:
                     entry.durable_handle = await self.coordinator.prepare_operation(entry, index)
 
         async def run(index: int, entry: _Prepared) -> _Finalized:
-            item = await self._execute_prepared(context, entry, emit, cancellation)
+            item = await self._execute_prepared(context, assistant_message, entry, emit, cancellation)
             # execution_end 按完成顺序产生；下面最终 message commit
             # 仍会按 source order 消费 gather 后的值。
             await self._emit_end(item, emit)
@@ -385,6 +488,7 @@ class ToolRuntime:
     async def _prepare(
         self,
         context: AgentContext,
+        assistant_message: AgentMessage,
         call: ToolCall,
         cancellation: CancellationToken,
     ) -> _Prepared | _Finalized:
@@ -429,9 +533,12 @@ class ToolRuntime:
             try:
                 decision = await call_with_optional_cancellation(
                     self.before_tool_call,
-                    call,
-                    args,
-                    context,
+                    BeforeToolCallContext(
+                        assistant_message=assistant_message,
+                        tool_call=call,
+                        args=args,
+                        context=context,
+                    ),
                     cancellation=cancellation,
                 )
             except asyncio.CancelledError:
@@ -463,6 +570,7 @@ class ToolRuntime:
     async def _execute_prepared(
         self,
         context: AgentContext,
+        assistant_message: AgentMessage,
         prepared: _Prepared,
         emit: Emit,
         cancellation: CancellationToken,
@@ -472,6 +580,7 @@ class ToolRuntime:
             prepared.call.id,
             prepared.call.name,
             emit,
+            args=prepared.call.arguments,
             cancellation=cancellation,
             **(self.coordinator.execution_context_kwargs(prepared.durable_handle) if self.coordinator and prepared.durable_handle else {}),
         )
@@ -498,11 +607,14 @@ class ToolRuntime:
             try:
                 patch = await call_with_optional_cancellation(
                     self.after_tool_call,
-                    prepared.call,
-                    prepared.args,
-                    result,
-                    is_error,
-                    context,
+                    AfterToolCallContext(
+                        assistant_message=assistant_message,
+                        tool_call=prepared.call,
+                        args=prepared.args,
+                        result=result,
+                        is_error=is_error,
+                        context=context,
+                    ),
                     cancellation=cancellation,
                 )
             except asyncio.CancelledError:
@@ -525,6 +637,8 @@ class ToolRuntime:
                 if patch.content is not None:
                     result.content = normalize_content_blocks(patch.content)
                 if patch.replace_details:
+                    result.details = None if patch.details is _PATCH_UNSET else patch.details
+                elif patch.details is not _PATCH_UNSET:
                     result.details = patch.details
                 if patch.terminate is not None:
                     result.terminate = patch.terminate
@@ -557,6 +671,7 @@ class ToolRuntime:
                 tool_name=item.call.name,
                 args=item.call.arguments,
                 result=item.result,
+                is_error=item.is_error,
                 error=item.result.content.text if item.is_error else None,
             )
         )

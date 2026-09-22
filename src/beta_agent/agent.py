@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Literal
 
@@ -13,9 +14,19 @@ from .providers.policy import ProviderRequestOptions
 from .runtime.cancellation import CancellationToken, call_with_optional_cancellation
 from .runtime.errors import AgentErrorInfo
 from .runtime.events import EventStream
-from .runtime.transcript import get_current_system_prompt
+from .runtime.transcript import create_runtime_baseline, get_current_system_prompt
 from .harness.tool import AfterToolCall, BeforeToolCall
-from .types import AgentContext, AgentMessage, NextTurnUpdate, QueueMode, TurnResult
+from .types import (
+    AgentContext,
+    AgentEvent,
+    AgentMessage,
+    AgentState,
+    NextTurnUpdate,
+    QueueMode,
+    RequestUpdate,
+    TurnDecision,
+    TurnResult,
+)
 
 TransformContext = Callable[..., Awaitable[list[AgentMessage]] | list[AgentMessage]]
 PrepareNextTurn = Callable[
@@ -23,6 +34,8 @@ PrepareNextTurn = Callable[
     Awaitable[NextTurnUpdate | AgentContext | None] | NextTurnUpdate | AgentContext | None,
 ]
 ShouldStopAfterTurn = Callable[..., Awaitable[bool] | bool]
+FinishTurn = Callable[..., Awaitable[TurnDecision | None] | TurnDecision | None]
+PrepareRequest = Callable[..., Awaitable[RequestUpdate | None] | RequestUpdate | None]
 MessageProvider = Callable[..., Awaitable[list[AgentMessage]] | list[AgentMessage]]
 ConvertToLlm = Callable[
     [Sequence[AgentMessage]],
@@ -55,6 +68,14 @@ class AgentConfig:
     # 可选 Hook，在每个 turn 完整结束后，判断是否立即结束当前 Agent run。
     should_stop_after_turn: ShouldStopAfterTurn | None = None
 
+    # 可选 Hook，在 turn result 已经完整构造、turn_end 发出之前决定本轮
+    # 是自然调度、明确继续一次，还是立即结束。
+    finish_turn: FinishTurn | None = None
+
+    # 可选 Hook，在每个 provider request 之前替换 context/model/options。
+    # 它位于 Runtime 与 Adapter 之间，因此 adapter retry 不会重复调用它。
+    prepare_request: PrepareRequest | None = None
+
     # 可选消息提供器，在 turn 之间读取 Steering 消息，使其参与下一次模型调用。
     get_steering_messages: MessageProvider | None = None
 
@@ -70,6 +91,10 @@ class AgentConfig:
     provider_request_options: ProviderRequestOptions = dataclass_field(default_factory=ProviderRequestOptions)
 
     tool_coordinator: Any = None
+
+    def __post_init__(self) -> None:
+        if self.finish_turn is not None and self.should_stop_after_turn is not None:
+            raise ValueError("finish_turn and should_stop_after_turn cannot both be configured")
 
 
 @dataclass(slots=True)
@@ -102,6 +127,13 @@ class _MessageQueue:
         self._items.clear()
         return items
 
+    def peek(self, mode: QueueMode = "all") -> list[AgentMessage]:
+        if not self._items:
+            return []
+        if mode == "one-at-a-time":
+            return [deepcopy(self._items[0])]
+        return deepcopy(list(self._items))
+
     def clear(self) -> None:
         self._items.clear()
 
@@ -124,6 +156,8 @@ class Agent(_AgentLoopMixin):
         self.model = model
         self.context = AgentContext(system_prompt=system_prompt, messages=list(messages), tools=list(tools))
         self.config = config or AgentConfig()
+        if self.config.finish_turn is not None and self.config.should_stop_after_turn is not None:
+            raise ValueError("finish_turn and should_stop_after_turn cannot both be configured")
         self._steering = _MessageQueue()
         self._follow_up = _MessageQueue()
         self._active_run: _ActiveRun | None = None
@@ -131,6 +165,10 @@ class Agent(_AgentLoopMixin):
         self._external_failure: AgentErrorInfo | None = None
         self._subscribers: list[Callable[..., Any]] = []
         self._provider_request_options = self.config.provider_request_options
+        self._state_streaming = False
+        self._state_streaming_message: AgentMessage | None = None
+        self._state_pending_tool_calls: set[str] = set()
+        self._state_error_message: str | None = None
 
     @property
     def messages(self) -> list[AgentMessage]:
@@ -150,6 +188,25 @@ class Agent(_AgentLoopMixin):
     @property
     def last_error(self) -> AgentErrorInfo | None:
         return self._last_error
+
+    @property
+    def active_cancellation(self) -> CancellationToken | None:
+        active = self._active_run
+        return active.token if active is not None and not active.stream.done else None
+
+    @property
+    def state(self) -> AgentState:
+        """Return a defensive snapshot of the current runtime state."""
+
+        return AgentState(
+            model=self.model,
+            messages=deepcopy(self.context.messages),
+            tools=list(self.context.tools),
+            is_streaming=self._state_streaming,
+            streaming_message=deepcopy(self._state_streaming_message),
+            pending_tool_calls=frozenset(self._state_pending_tool_calls),
+            error_message=self._state_error_message,
+        )
 
     def replace_messages(self, messages: Sequence[AgentMessage]) -> None:
         self.context.messages = list(messages)
@@ -172,6 +229,27 @@ class Agent(_AgentLoopMixin):
 
     def has_queued_messages(self) -> bool:
         return bool(self._steering or self._follow_up)
+
+    def peek_queued_messages(self) -> list[AgentMessage]:
+        """Peek at the next queue selection without consuming either queue."""
+
+        steering = self._steering.peek(self.config.steering_mode)
+        if steering:
+            return steering
+        return self._follow_up.peek(self.config.follow_up_mode)
+
+    def reset(self) -> None:
+        """Reset conversation runtime state while retaining the current baseline."""
+
+        self._ensure_idle()
+        self.context.messages = create_runtime_baseline(self.context.messages, self.context.tools)
+        self.clear_all_queues()
+        self._state_streaming = False
+        self._state_streaming_message = None
+        self._state_pending_tool_calls.clear()
+        self._state_error_message = None
+        self._last_error = None
+        self._external_failure = None
 
     def subscribe(self, listener: Callable[..., Any]) -> Callable[[], None]:
         """Register an awaited event listener and return an idempotent unsubscribe."""
@@ -209,6 +287,9 @@ class Agent(_AgentLoopMixin):
         # 清除上一次运行遗留的错误状态。
         self._last_error = None
         self._external_failure = None
+        self._state_error_message = None
+        self._state_streaming_message = None
+        self._state_pending_tool_calls.clear()
 
         # EventStream 启动后台异步任务后，会把自己的 emit 函数传进来。
         # 相当于执行：await self._run(prompts, emit, token)
@@ -293,6 +374,50 @@ class Agent(_AgentLoopMixin):
     # 同时兼容同步函数和异步函数，并统一用 await 返回结果。
     async def _call(self, fn: Callable[..., Any], *args: Any, cancellation: CancellationToken | None = None) -> Any:
         return await call_with_optional_cancellation(fn, *args, cancellation=cancellation)
+
+    def _reduce_event(self, event: AgentEvent, *, final: bool = False) -> None:
+        """Reduce a published event into the private runtime state.
+
+        ``agent_end`` is reduced only after awaited subscribers settle.  This
+        keeps the state observable as running during terminal subscriber work.
+        """
+
+        if event.type == "agent_end":
+            if event.status == "aborted":
+                self._state_error_message = event.error or "Operation aborted"
+            elif event.status == "error" and self._state_error_message is None:
+                self._state_error_message = event.error or "Agent run failed."
+            if final:
+                self._state_streaming = False
+                self._state_streaming_message = None
+                self._state_pending_tool_calls.clear()
+            return
+        if event.type == "agent_start":
+            self._state_streaming = True
+            self._state_streaming_message = None
+            self._state_pending_tool_calls.clear()
+            self._state_error_message = None
+        elif event.type in {"message_start", "message_update"}:
+            message = event.partial or event.message
+            if message is not None and message.role == "assistant":
+                self._state_streaming_message = deepcopy(message)
+        elif event.type == "message_end":
+            message = event.message
+            if message is not None and message.role == "assistant":
+                self._state_streaming_message = None
+                if message.stop_reason in {"error", "aborted"}:
+                    self._state_error_message = message.metadata.get(
+                        "error_message",
+                        "Operation aborted" if message.stop_reason == "aborted" else "Agent run failed.",
+                    )
+        elif event.type == "tool_execution_start" and event.tool_call_id:
+            self._state_pending_tool_calls.add(event.tool_call_id)
+        elif event.type == "tool_execution_end" and event.tool_call_id:
+            self._state_pending_tool_calls.discard(event.tool_call_id)
+        elif event.type == "agent_error":
+            self._state_error_message = event.error or (
+                event.error_info.message if event.error_info is not None else "Agent run failed."
+            )
 
     async def _drain_steering(self, cancellation: CancellationToken) -> list[AgentMessage]:
         cancellation.throw_if_cancelled()

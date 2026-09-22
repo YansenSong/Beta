@@ -291,6 +291,7 @@ def agent_message_to_dict(message: AgentMessage) -> dict[str, Any]:
             for tool in message.tools_added
         ],
         "tools_removed": [{"name": tool.name} for tool in message.tools_removed],
+        "thinking": message.thinking,
     }
 
 
@@ -307,6 +308,7 @@ def agent_message_from_dict(data: dict[str, Any]) -> AgentMessage:
         timestamp=data.get("timestamp", utc_now_iso()),
         tools_added=[ToolDeclaration(**tool) for tool in data.get("tools_added", [])],
         tools_removed=[ToolReference(**tool) for tool in data.get("tools_removed", [])],
+        thinking=str(data.get("thinking", "")),
     )
 
 

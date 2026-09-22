@@ -61,7 +61,11 @@ class OpenAICompatibleAdapter:
         cancellation: CancellationToken | None = None,
     ) -> AsyncIterator[ModelEvent]:
         text = ""
+        thinking = ""
+        text_started = False
+        thinking_started = False
         tool_parts: dict[int, dict[str, Any]] = {}
+        tool_started: set[int] = set()
         finish_reason = "stop"
         try:
             options = request_options or ProviderRequestOptions()
@@ -134,8 +138,45 @@ class OpenAICompatibleAdapter:
                         chunk = json.loads(data)
                         choice = chunk.get("choices", [{}])[0]
                         delta = choice.get("delta", {})
-                        if delta.get("content"):
-                            text += delta["content"]
+                        reasoning_delta = next(
+                            (
+                                delta.get(name)
+                                for name in ("thinking", "reasoning", "reasoning_content")
+                                if delta.get(name)
+                            ),
+                            None,
+                        )
+                        if reasoning_delta:
+                            if not thinking_started:
+                                thinking_started = True
+                                yield ModelEvent(
+                                    type="thinking_start",
+                                    partial=AgentMessage.assistant(text, thinking=thinking),
+                                    content_index=0,
+                                )
+                            thinking += str(reasoning_delta)
+                            yield ModelEvent(
+                                type="thinking_delta",
+                                partial=AgentMessage.assistant(text, thinking=thinking),
+                                content_index=0,
+                                delta=str(reasoning_delta),
+                            )
+                        content_delta = delta.get("content")
+                        if content_delta is not None and content_delta != "":
+                            if not text_started:
+                                text_started = True
+                                yield ModelEvent(
+                                    type="text_start",
+                                    partial=AgentMessage.assistant(text, thinking=thinking),
+                                    content_index=0,
+                                )
+                            text += str(content_delta)
+                            yield ModelEvent(
+                                type="text_delta",
+                                partial=AgentMessage.assistant(text, thinking=thinking),
+                                content_index=0,
+                                delta=str(content_delta),
+                            )
                         for item in delta.get("tool_calls") or []:
                             index = int(item.get("index", 0))
                             acc = tool_parts.setdefault(index, {"id": "", "name": "", "arguments": ""})
@@ -146,23 +187,62 @@ class OpenAICompatibleAdapter:
                                 acc["name"] += function["name"]
                             if function.get("arguments"):
                                 acc["arguments"] += function["arguments"]
+                            if index not in tool_started:
+                                tool_started.add(index)
+                                yield ModelEvent(
+                                    type="toolcall_start",
+                                    partial=AgentMessage.assistant(text, thinking=thinking),
+                                    content_index=index,
+                                    tool_call_id=acc["id"] or f"call_{index}",
+                                    tool_name=acc["name"] or None,
+                                )
+                            tool_delta = function.get("arguments") or function.get("name")
+                            if tool_delta:
+                                yield ModelEvent(
+                                    type="toolcall_delta",
+                                    partial=AgentMessage.assistant(
+                                        text,
+                                        thinking=thinking,
+                                        tool_calls=self._tool_calls(tool_parts),
+                                    ),
+                                    content_index=index,
+                                    tool_call_id=acc["id"] or f"call_{index}",
+                                    tool_name=acc["name"] or None,
+                                    delta=str(tool_delta),
+                                )
                         if choice.get("finish_reason"):
                             finish_reason = choice["finish_reason"]
                         partial = AgentMessage.assistant(
                             text,
+                            thinking=thinking,
                             tool_calls=self._tool_calls(tool_parts),
                             stop_reason=self._map_finish_reason(finish_reason),
                         )
-                        yield ModelEvent(type="update", partial=partial)
                 finally:
                     await response.aclose()
 
-            final = AgentMessage.assistant(
+            partial = AgentMessage.assistant(
                 text,
+                thinking=thinking,
                 tool_calls=self._tool_calls(tool_parts),
                 stop_reason=self._map_finish_reason(finish_reason),
             )
-            yield ModelEvent(type="done", partial=final)
+            if text_started:
+                yield ModelEvent(type="text_end", partial=partial, content_index=0)
+            if thinking_started:
+                yield ModelEvent(type="thinking_end", partial=partial, content_index=0)
+            for index in sorted(tool_started):
+                calls = self._tool_calls({index: tool_parts[index]})
+                yield ModelEvent(
+                    type="toolcall_end",
+                    partial=partial,
+                    content_index=index,
+                    tool_call_id=calls[0].id if calls else tool_parts[index].get("id") or f"call_{index}",
+                    tool_name=calls[0].name if calls else tool_parts[index].get("name") or None,
+                    tool_call=calls[0] if calls else None,
+                    completed_tool_call=calls[0] if calls else None,
+                )
+            yield ModelEvent(type="done", partial=partial)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -170,12 +250,19 @@ class OpenAICompatibleAdapter:
             # Agent 仍会为不符合 contract 的 third-party adapter 保留一层防御性 catch。
             error = AgentMessage.assistant(
                 text,
+                thinking=thinking,
                 tool_calls=self._tool_calls(tool_parts),
                 stop_reason="error",
                 error_message=str(exc),
                 error_type=type(exc).__name__,
             )
-            yield ModelEvent(type="error", partial=error)
+            yield ModelEvent(
+                type="error",
+                partial=error,
+                error=str(exc),
+                error_message=str(exc),
+                error_type=type(exc).__name__,
+            )
 
     def _messages(self, system_prompt: str, messages: Sequence[ProviderMessage]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []

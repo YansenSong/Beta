@@ -146,6 +146,10 @@ class AgentMessage:
     timestamp: str = field(default_factory=utc_now_iso)
     tools_added: list[ToolDeclaration] = field(default_factory=list)
     tools_removed: list[ToolReference] = field(default_factory=list)
+    # Reasoning/thinking is kept separate from user-visible text.  Providers
+    # which do not expose reasoning leave this empty; it is intentionally not
+    # converted to a ProviderMessage by the default converter.
+    thinking: str = ""
 
     def __post_init__(self) -> None:
         self.content = normalize_content_blocks(self.content)
@@ -157,6 +161,18 @@ class AgentMessage:
     @property
     def text(self) -> str:
         return self.content.text
+
+    @property
+    def error_message(self) -> str | None:
+        return self.metadata.get("error_message")
+
+    @property
+    def error_type(self) -> str | None:
+        return self.metadata.get("error_type")
+
+    @property
+    def stage(self) -> str | None:
+        return self.metadata.get("stage")
 
     @classmethod
     def user(cls, text: str, **metadata: Any) -> "AgentMessage":
@@ -187,6 +203,7 @@ class AgentMessage:
         content: list[AgentContent] | None = None,
         tool_calls: list[ToolCall] | None = None,
         stop_reason: StopReason = "stop",
+        thinking: str = "",
         **metadata: Any,
     ) -> "AgentMessage":
         return cls(
@@ -194,6 +211,7 @@ class AgentMessage:
             content=content if content is not None else [TextContent(text)],
             tool_calls=list(tool_calls or []),
             stop_reason=stop_reason,
+            thinking=thinking,
             metadata=metadata,
         )
 

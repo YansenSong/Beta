@@ -103,6 +103,8 @@ turn_start
    ↓
 queued/user messages
    ↓
+prepare_request
+   ↓
 transform_context
    ↓
 ModelAdapter.stream()
@@ -127,6 +129,8 @@ Tool Calls?
            ↓
         agent_end
 ```
+
+`finish_turn` 在 `turn_end` 之前作出 `continue` / `end` / natural decision；`continue` 在没有 Tool、Steering 或 Follow-up 时只发起一次 context-only request，不伪造 user message。`prepare_request` 每个逻辑 provider request 恰好调用一次，位于 transform/converter 之前。
 
 每次请求前，Runtime 从 transcript 重放系统指令和模型可见 Tool 声明，并在 Provider 边界投影成 Adapter 所需的 `system_prompt`、普通消息和当前顶层 tools。
 
@@ -176,7 +180,7 @@ async for event in stream:
 messages = await stream.result()
 ```
 
-`message_update` 携带当前完整 partial message，而不是要求 UI 自己累计字符 delta。
+`message_update` 携带当前完整 partial message 和原始 `ModelEvent`；`ModelEvent` 支持 text/thinking/toolcall 的 start、delta、end，以及 legacy `update`。Tool execution events 使用显式的 `partial_result` / `is_error` 字段。
 
 此外，`Agent.subscribe(listener)` 提供按注册顺序 await 的事件订阅。Agent 先等待 subscribers，再把事件交给调用方的 EventStream；因此 `agent_end` listener 完成前 run 仍未 settle，Session persistence 不需要依赖 `asyncio.sleep(0)` 让外层消费者抢到调度。
 
@@ -226,6 +230,8 @@ lookup
 ```
 
 Tool 失败通常被归一化成模型可见 error Tool Result，让模型有机会自我修正，而不是直接终止整个 Agent run。
+
+规范 tool hook 接收结构化 context：`BeforeToolCallContext` / `AfterToolCallContext`。旧的 `(call, args, ...)` 位置参数仍通过签名适配保留兼容；before hook 失败 fail closed，after hook 失败不会触发 durable effect replay。
 
 `ToolResult.content` 可包含文本、图片或混合 content blocks，并可携带 usage metadata。`ToolExecutionContext.progress()` 在 execute settle 后关闭更新入口，避免 late progress 出现在 `tool_execution_end` 之后。
 

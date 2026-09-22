@@ -6,7 +6,7 @@ from typing import Any, Callable
 from ..agent import Agent
 from ..runtime.cancellation import CancellationToken, call_with_optional_cancellation
 from ..runtime.events import EventStream
-from ..harness.tool import BeforeToolCallDecision, Tool
+from ..harness.tool import BeforeToolCallContext, BeforeToolCallDecision, Tool, adapt_tool_hook
 from ..types import AgentEvent, AgentMessage
 from .runner import ExtensionRunner
 from .types import MessageEndEvent, ToolCallEvent, TurnEndEvent
@@ -78,20 +78,24 @@ def bind_extensions(agent: Agent, runner: ExtensionRunner, *, persist_messages: 
 
     previous_before = agent.config.before_tool_call
     previous_transform = agent.config.transform_context
+    previous_before_adapter = adapt_tool_hook(previous_before, kind="before")
 
-    async def before_tool_call(call, args, context, cancellation: CancellationToken | None = None):
-        if previous_before:
+    async def before_tool_call(hook_context: BeforeToolCallContext, cancellation: CancellationToken | None = None):
+        if previous_before_adapter:
             decision = await call_with_optional_cancellation(
-                previous_before,
-                call,
-                args,
-                context,
+                previous_before_adapter,
+                hook_context,
                 cancellation=cancellation,
             )
             if decision and decision.block:
                 return decision
         verdict = await runner.emit_tool_call(
-            ToolCallEvent(tool_call=call, args=args, agent_context=context),
+            ToolCallEvent(
+                tool_call=hook_context.tool_call,
+                args=hook_context.args,
+                agent_context=hook_context.context,
+                assistant_message=hook_context.assistant_message,
+            ),
             cancellation=cancellation,
         )
         if verdict and verdict.block:

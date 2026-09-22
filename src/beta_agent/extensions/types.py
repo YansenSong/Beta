@@ -41,6 +41,7 @@ class ToolCallEvent:
     tool_call: ToolCall
     args: BaseModel
     agent_context: AgentContext
+    assistant_message: AgentMessage | None = None
 
 @dataclass(slots=True)
 class ContextEvent:

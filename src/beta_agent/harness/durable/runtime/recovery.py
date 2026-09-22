@@ -5,8 +5,8 @@ from ....runtime.cancellation import CancellationToken
 from ....runtime.cancellation import call_with_optional_cancellation
 from ....messages import utc_now_iso
 from ...session import SessionTree, agent_message_from_dict
-from ...tool import Tool, ToolExecutionContext
-from ....types import AgentContext, ToolCall, ToolResult
+from ...tool import AfterToolCallContext, Tool, ToolExecutionContext, _PATCH_UNSET, adapt_tool_hook
+from ....types import AgentContext, AgentMessage, ToolCall, ToolResult
 from .tools import DurableToolCoordinator, OperationHandle
 from ..types import DurableStorage
 from .outbox import SessionOutboxPublisher
@@ -21,6 +21,7 @@ class RecoveryReport:
 
 async def recover_durable_runtime(storage: DurableStorage, session: SessionTree, session_file, tools: Sequence[Tool[Any]], *, after_tool_call=None) -> RecoveryReport:
     report, tool_map = RecoveryReport(), {tool.name: tool for tool in tools}
+    after_hook = adapt_tool_hook(after_tool_call, kind="after")
     for operation in await storage.scan_effect_pending_operations():
         tool, reason, args = tool_map.get(operation.tool_name), None, None
         if tool is None: reason = "missing_tool"
@@ -39,6 +40,7 @@ async def recover_durable_runtime(storage: DurableStorage, session: SessionTree,
         else:
             async def emit(_event): return None
             ctx = ToolExecutionContext(operation.tool_call_id, operation.tool_name, emit,
+                args=operation.source_arguments,
                 cancellation=CancellationToken(), **coordinator.execution_context_kwargs(handle))
             try:
                 result, is_error = await tool.execute(args, ctx), False
@@ -48,10 +50,27 @@ async def recover_durable_runtime(storage: DurableStorage, session: SessionTree,
             finally: await ctx.close_updates()
             if after_tool_call is not None:
                 try:
+                    context = AgentContext(messages=session.reconstruct_messages(), tools=tools)
+                    call = ToolCall(operation.tool_call_id, operation.tool_name, operation.arguments)
+                    assistant = next(
+                        (
+                            message
+                            for message in reversed(context.messages)
+                            if message.role == "assistant"
+                            and any(item.id == operation.tool_call_id for item in message.tool_calls)
+                        ),
+                        AgentMessage.assistant(tool_calls=[call], stop_reason="tool_calls"),
+                    )
                     patch = await call_with_optional_cancellation(
-                        after_tool_call,
-                        ToolCall(operation.tool_call_id, operation.tool_name, operation.arguments),
-                        args, result, is_error, AgentContext(messages=session.reconstruct_messages(), tools=tools),
+                        after_hook,
+                        AfterToolCallContext(
+                            assistant_message=assistant,
+                            tool_call=call,
+                            args=args,
+                            result=result,
+                            is_error=is_error,
+                            context=context,
+                        ),
                         cancellation=ctx.cancellation,
                     )
                 except Exception as exc:
@@ -63,7 +82,10 @@ async def recover_durable_runtime(storage: DurableStorage, session: SessionTree,
                 if patch:
                     from ...messages import normalize_content_blocks
                     if patch.content is not None: result.content = normalize_content_blocks(patch.content)
-                    if patch.replace_details: result.details = patch.details
+                    if patch.replace_details:
+                        result.details = None if getattr(patch, "details", _PATCH_UNSET) is _PATCH_UNSET else patch.details
+                    elif getattr(patch, "details", _PATCH_UNSET) is not _PATCH_UNSET:
+                        result.details = patch.details
                     if patch.terminate is not None: result.terminate = patch.terminate
                     if patch.is_error is not None: is_error = patch.is_error
                     if patch.usage is not None: result.usage = dict(patch.usage)

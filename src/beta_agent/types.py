@@ -7,7 +7,9 @@ from typing import Any, Literal, TYPE_CHECKING
 if TYPE_CHECKING:
     from .providers.model import ModelAdapter
     from .harness.tool import Tool
-    from .providers.policy import ProviderRequestOptionsPatch
+    from .providers.policy import ProviderRequestOptions, ProviderRequestOptionsPatch
+
+from .providers.policy import ProviderRequestOptions
 
 from .messages import (
     AgentContent,
@@ -24,17 +26,90 @@ from .messages import (
 from .runtime.errors import AgentErrorInfo, RunStatus
 
 QueueMode = Literal["all", "one-at-a-time"]
+TurnAction = Literal["continue", "end"]
+
+ModelEventType = Literal[
+    "start",
+    "text_start",
+    "text_delta",
+    "text_end",
+    "thinking_start",
+    "thinking_delta",
+    "thinking_end",
+    "toolcall_start",
+    "toolcall_delta",
+    "toolcall_end",
+    "done",
+    "error",
+    # Kept for adapters and callers written against the first Beta protocol.
+    "update",
+]
+
+AgentEventType = Literal[
+    "agent_start",
+    "turn_start",
+    "message_start",
+    "message_update",
+    "message_end",
+    "prepare_request",
+    "tool_execution_start",
+    "tool_execution_update",
+    "tool_execution_end",
+    "finish_turn",
+    "turn_end",
+    "agent_error",
+    "agent_end",
+]
 
 
 @dataclass(slots=True)
 class ModelEvent:
-    type: Literal["start", "update", "done", "error"]
+    type: ModelEventType
     partial: AgentMessage
+    content_index: int | None = None
+    delta: str | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_call: ToolCall | None = None
+    completed_tool_call: ToolCall | None = None
+    error: str | None = None
+    error_message: str | None = None
+    error_type: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class TurnDecision:
+    action: TurnAction
+
+
+@dataclass(slots=True)
+class PrepareRequestContext:
+    context: AgentContext
+    model: "ModelAdapter"
+    request_options: "ProviderRequestOptions"
+
+
+@dataclass(slots=True)
+class RequestUpdate:
+    context: AgentContext | None = None
+    model: "ModelAdapter | None" = None
+    request_options: "ProviderRequestOptionsPatch | None" = None
+
+
+@dataclass(slots=True)
+class AgentState:
+    model: "ModelAdapter"
+    messages: list[AgentMessage]
+    tools: list["Tool[Any]"]
+    is_streaming: bool
+    streaming_message: AgentMessage | None
+    pending_tool_calls: frozenset[str]
+    error_message: str | None
 
 
 @dataclass(slots=True)
 class AgentEvent:
-    type: str
+    type: AgentEventType
     message: AgentMessage | None = None
     messages: list[AgentMessage] | None = None
     tool_results: list[AgentMessage] | None = None
@@ -45,6 +120,16 @@ class AgentEvent:
     error: str | None = None
     status: RunStatus | None = None
     error_info: AgentErrorInfo | None = None
+    # ``partial`` is an explicit alias for the complete current assistant
+    # snapshot on message_update events. ``message`` remains the historical
+    # field used by existing consumers.  New fields are appended to preserve
+    # the original positional constructor order.
+    partial: AgentMessage | None = None
+    model_event: ModelEvent | None = None
+    partial_result: Any = None
+    is_error: bool | None = None
+    turn_result: "TurnResult | None" = None
+    turn_decision: TurnDecision | None = None
 
 
 @dataclass(slots=True, init=False)
@@ -131,12 +216,17 @@ __all__ = [
     "AgentErrorInfo",
     "AgentEvent",
     "AgentMessage",
+    "AgentEventType",
+    "AgentState",
     "ContentBlocks",
     "ImageContent",
     "Message",
     "ModelEvent",
+    "ModelEventType",
     "NextTurnUpdate",
+    "PrepareRequestContext",
     "QueueMode",
+    "RequestUpdate",
     "Role",
     "RunStatus",
     "StopReason",
@@ -144,6 +234,8 @@ __all__ = [
     "ToolBatchResult",
     "ToolCall",
     "ToolResult",
+    "TurnAction",
+    "TurnDecision",
     "TurnResult",
     "utc_now_iso",
 ]

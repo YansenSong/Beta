@@ -41,6 +41,8 @@ Durable Storage（被 Harness 使用）
 ```text
 User / queued Message
         ↓
+prepare_request (per logical provider request)
+        ↓
 transform_context
         ↓
 transcript replay + provider projection
@@ -59,6 +61,8 @@ execute
 after hook
         ↓
 Tool Result Message
+        ↓
+finish_turn / should_stop_after_turn
         ↓
 turn_end
         ↓
@@ -129,6 +133,8 @@ AgentEvent
 AgentContext
 TurnResult
 ToolBatchResult
+TurnDecision / RequestUpdate
+AgentState
 ```
 
 Agent Core 尽量只理解这些内部对象，而不是 Provider-specific JSON。
@@ -159,11 +165,15 @@ Provider 差异不应进入 Agent Loop。
 - Runtime history；
 - Steering / Follow-up checkpoint；
 - `transform_context`；
+- `prepare_request`；
 - `prepare_next_turn`；
+- `finish_turn`；
 - Tool batch 的触发；
 - 生命周期事件。
 
 `AgentContext.messages` 是 canonical transcript：system instruction 增量和模型可见 Tool declaration 通过 system message 顺序重放。每次模型请求前，Agent 会比较 transcript declaration 与当前 executable tools，并将差异作为新 message 持久化。
+
+`prepare_request` 在每次逻辑 provider request 前恰好执行一次，可替换 context、model 和合并后的 request options；它位于 transform/converter 之前，Adapter 内部 retry 不会重复触发。`finish_turn` 在 `turn_end` 前返回 `continue` / `end` 或 `None`，不会注入伪造消息。
 
 Run 的初始 prompt 会先与当前 executable tool set 对齐，再一起加入 transcript；因此空闲期间发生的 Tool 切换记录在新 user message 之前，branch 到该请求时也能重放正确工具状态。
 
@@ -192,6 +202,10 @@ lookup
 ```
 
 Tool progress 只在执行生命周期内可发出；Tool settle 后到达的 update 会被忽略。Tool Result 支持 text/image content blocks 和可选 usage，并随 Tool Message 一起提交。
+
+Tool hook 的规范参数是 `BeforeToolCallContext` / `AfterToolCallContext`，其中包含完整 assistant message、当前 call、已校验 args 和 AgentContext。Runtime 在注册时用签名检查适配旧的位置参数，不通过捕获 `TypeError` 重试调用；Extension bridge 和 durable recovery 复用同一适配层。
+
+`AgentState` 是 Agent 的运行时 snapshot，提供 streaming message、pending tool-call IDs、error 和 defensive message/tool collections；`peek_queued_messages()` 不消费队列，`reset()` 只保留当前 system/tool baseline，不修改 SessionTree。
 
 ### `session.py`
 

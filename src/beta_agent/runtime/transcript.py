@@ -151,9 +151,33 @@ def collapse_transcript(messages: Sequence[AgentMessage]) -> tuple[str, list[Age
     return get_current_system_prompt(messages), [message for message in messages if message.role != "system"]
 
 
+def create_runtime_baseline(
+    messages: Sequence[AgentMessage],
+    tools: Sequence[object] | None = None,
+) -> list[AgentMessage]:
+    """Return the current system/tool state as a resettable transcript baseline.
+
+    Agent.reset() intentionally forgets conversation messages but must not forget
+    the executable tool declarations or the durable system instructions that the
+    current runtime has established.  Rebuilding one canonical system snapshot
+    also avoids carrying ordinary conversation metadata into the next run.
+    """
+
+    system_prompt = get_current_system_prompt(messages)
+    declarations = (
+        [to_tool_declaration(tool) for tool in tools]
+        if tools is not None
+        else get_current_tool_declarations(messages)
+    )
+    if not system_prompt and not declarations:
+        return []
+    return [AgentMessage.system(system_prompt, tools_added=declarations)]
+
+
 __all__ = [
     "ToolStateChanges",
     "collapse_transcript",
+    "create_runtime_baseline",
     "create_initial_system_message",
     "declare_tool_changes",
     "declarations_equal",
