@@ -16,8 +16,7 @@ from beta_agent.harness.durable.runtime import (
     RecoveryReport,
     recover_durable_runtime,
 )
-from beta_agent.messages import utc_now_iso
-import uuid
+
 from beta_agent.harness.compation import Summarizer, compact_session
 from beta_agent.extensions import ExtensionFactory, ExtensionHost, ExtensionRunner, RuntimeConfig, bind_extensions
 from beta_agent.providers.model import ModelAdapter

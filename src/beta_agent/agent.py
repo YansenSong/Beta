@@ -25,7 +25,6 @@ from .types import (
     QueueMode,
     RequestUpdate,
     TurnDecision,
-    TurnResult,
 )
 
 TransformContext = Callable[..., Awaitable[list[AgentMessage]] | list[AgentMessage]]
